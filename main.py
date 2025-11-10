@@ -21,7 +21,7 @@ def decode_and_normalise_secret(raw: bytes) -> str:
         text = raw.decode("utf-8")
     except UnicodeDecodeError:
         try:
-            text = raw.decode("utf-16")  # handles FF FE BOM like your sample
+            text = raw.decode("utf-16") 
         except UnicodeDecodeError:
             text = raw.decode("latin-1")  # last resort so we can clean it
 
@@ -40,10 +40,9 @@ def get_secret(secret_id: str, version_id: str = "latest") -> str:
         resp = client.access_secret_version(request={"name": name})
         secret_text = decode_and_normalise_secret(resp.payload.data)
 
-        # (Optional) sanity check: Discord bot tokens are three dot-separated parts.
+        # sanity check: Discord bot tokens are three dot-separated parts.
         if secret_id.startswith("discord_"):
             if secret_text.count(".") != 2:
-                # Provide a helpful error if it looks wrong (e.g., OAuth client secret instead of bot token)
                 raise RuntimeError(
                     f"Secret '{secret_id}' does not look like a Discord bot token "
                     "(expected three dot-separated parts). Check you copied the Bot token from the "
@@ -67,7 +66,7 @@ intents = discord.Intents.default()
 bot = discord.Client(intents=intents)
 tree = discord.app_commands.CommandTree(bot)
 
-# IMPORTANT: ensure GUILD_ID is an int
+# Ensure GUILD_ID is an int
 GUILD_ID_ENV = os.getenv("GUILD_ID")
 GUILD_ID = discord.Object(id=int(GUILD_ID_ENV) if GUILD_ID_ENV else 1436538029316636705)
 
