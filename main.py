@@ -1,9 +1,8 @@
 import os
-import json
-import re
 from dotenv import load_dotenv
 from google.cloud import secretmanager
 from google.api_core.exceptions import NotFound, PermissionDenied
+from cogs.create_new_war import CreateNewWar
 
 import interactions  # interactions.py
 
@@ -90,7 +89,7 @@ async def hello(ctx: interactions.SlashContext):
 @interactions.listen()
 async def on_startup():
     # interactions.py emits on_startup when the websocket is ready
-    user = bot.me
+    user = bot.user
     print(f"Logged in as {user.username}#{user.discriminator} ({user.id})")
 
     # NOTE: interactions.py registers slash commands automatically on startup for given scopes.
@@ -106,7 +105,7 @@ async def on_startup():
 
         # Fetch the channel object
         try:
-            channel = await interactions.get(bot, interactions.Channel, object_id=channel_id)
+            channel = await bot.fetch_channel(channel_id) 
             if channel is None:
                 print(f"Channel {channel_id} not found — check the ID or bot permissions.")
                 return
@@ -152,4 +151,5 @@ async def on_startup():
 # ---------------------------
 if __name__ == "__main__":
     # token already provided to Client(), just start
+    bot.load_extension("cogs.create_new_war")
     bot.start()
