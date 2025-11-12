@@ -1,7 +1,7 @@
-from classes.player import Player
 import uuid
 from datetime import datetime
 from typing import List, Dict, Any
+from classes.player import Player
 
 
 
