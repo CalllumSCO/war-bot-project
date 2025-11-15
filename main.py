@@ -152,4 +152,5 @@ async def on_startup():
 if __name__ == "__main__":
     # token already provided to Client(), just start
     bot.load_extension("cogs.create_new_war")
+    bot.load_extension("cogs.submit_pen")
     bot.start()
