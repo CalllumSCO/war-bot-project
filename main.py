@@ -3,6 +3,7 @@ from dotenv import load_dotenv
 from google.cloud import secretmanager
 from google.api_core.exceptions import NotFound, PermissionDenied
 from cogs.create_new_war import CreateNewWar
+from cogs.submit_pen import PenSubmit
 
 import interactions  # interactions.py
 
