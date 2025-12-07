@@ -135,7 +135,7 @@ class CreateNewWar(Extension):
         creation_player = Player(ctx.author.display_name, role="Bagger" if is_bagger else "Runner", ally=False)
         creation_war = War(war_type=track_label, team_name=team_name, start_time=search_time, search_in_advance=False if search_time=="ASAP" else True)
         creation_war.lineup.append(creation_player)
-        billboard_path = (os.path.join(BASE_DIR, 'temp', 'ct-billboard.json') if is_ct else os.path.join(BASE_DIR, 'temp', 'billboard-data', 'rt-billboard.json'))
+        billboard_path = (os.path.join(BASE_DIR, 'temp', 'billboard-data','ct-billboard.json') if is_ct else os.path.join(BASE_DIR, 'temp', 'billboard-data', 'rt-billboard.json'))
 
 
         # Load existing data (if any)
@@ -163,10 +163,6 @@ class CreateNewWar(Extension):
         # Post to the appropriate billboard channel
         try:
             channel = await self.bot.fetch_channel(target_channel_id)
-            await channel.send(
-                f"New **{track_label}** war started in **{team_name}** by <@{user_id}>!"
-            )
-            print(f"Posted war info for {team_name} in #{getattr(channel, 'name', target_channel_id)}")
         except Exception as e:
             print(f"Error sending to target channel {target_channel_id}: {e}")
 

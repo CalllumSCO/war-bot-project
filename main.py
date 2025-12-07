@@ -165,4 +165,5 @@ async def on_startup():
 if __name__ == "__main__":
     bot.load_extension("cogs.create_new_war")
     bot.load_extension("cogs.submit_pen")
+    bot.load_extension("cogs.post_war_billboard")
     bot.start()
