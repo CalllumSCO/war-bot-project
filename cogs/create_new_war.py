@@ -97,9 +97,11 @@ class CreateNewWar(Extension):
                         ephemeral=True
                     )
                     return
+                else:
+                    search_time = raw_input
 
             elif re.fullmatch(r"(1[0-2]|[1-9])(AM|PM)", raw_input):
-                pass
+                search_time = raw_input
 
             else:
                 await ctx.send(
@@ -121,14 +123,17 @@ class CreateNewWar(Extension):
             f"Command received in **{team_name}**.\n"
             f"Track type: **{track_label}**\n"
             f"Bagger: **{is_bagger}**\n"
-            f"Search time: **{search_time} ET**\n"
+            f"Search time: **{search_time}**\n"
             f"Your user ID is `{user_id}`.",
             ephemeral=True
         )
 
+
+        print(search_time)
+
         # Using display name for now, will likely link with lounge in the future
-        creation_player = Player(ctx.author.display_name, role="Runner", ally=False)
-        creation_war = War(war_type=track_label, team_name=team_name)
+        creation_player = Player(ctx.author.display_name, role="Bagger" if is_bagger else "Runner", ally=False)
+        creation_war = War(war_type=track_label, team_name=team_name, start_time=search_time, search_in_advance=False if search_time=="ASAP" else True)
         creation_war.lineup.append(creation_player)
         billboard_path = (os.path.join(BASE_DIR, 'temp', 'ct-billboard.json') if is_ct else os.path.join(BASE_DIR, 'temp', 'billboard-data', 'rt-billboard.json'))
 

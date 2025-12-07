@@ -21,4 +21,5 @@ class Player:
             player=data.get("player"),
             role=data.get("role"),
             ally=data.get("ally", False),
+            
         )

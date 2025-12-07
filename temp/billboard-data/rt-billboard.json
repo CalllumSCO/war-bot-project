@@ -32,5 +32,90 @@
         "ally": false
       }
     ]
+  },
+  {
+    "war_id": "2fb9666c-9e7c-4cba-8504-a0487c798f53",
+    "war_type": "RT",
+    "team_name": "Lethal Vendetta",
+    "gathered": false,
+    "search_in_advance": false,
+    "start_time": "2025-12-07T13:53:13.767636",
+    "last_updated": "2025-12-07T13:53:13.767643",
+    "ally_count": 0,
+    "lineup": [
+      {
+        "player": "callum",
+        "role": "Runner",
+        "ally": false
+      }
+    ]
+  },
+  {
+    "war_id": "fc864913-ca50-4178-b661-ddc2a3338e38",
+    "war_type": "RT",
+    "team_name": "Example Team",
+    "gathered": false,
+    "search_in_advance": false,
+    "start_time": "2025-12-07T14:33:49.574922",
+    "last_updated": "2025-12-07T14:33:49.574939",
+    "ally_count": 0,
+    "lineup": [
+      {
+        "player": "callum",
+        "role": "Runner",
+        "ally": false
+      }
+    ]
+  },
+  {
+    "war_id": "bd8db6c6-968d-4b7d-be17-52179b573504",
+    "war_type": "RT",
+    "team_name": "war matchmaking project",
+    "gathered": false,
+    "search_in_advance": false,
+    "start_time": "2025-12-07T15:53:40.162608",
+    "last_updated": "2025-12-07T15:53:40.162616",
+    "ally_count": 0,
+    "lineup": [
+      {
+        "player": "callum",
+        "role": "Runner",
+        "ally": false
+      }
+    ]
+  },
+  {
+    "war_id": "ce9f2754-766a-438f-b742-a529b57f70e9",
+    "war_type": "RT",
+    "team_name": "war matchmaking project",
+    "gathered": false,
+    "search_in_advance": false,
+    "start_time": "2025-12-07T15:56:50.190566",
+    "last_updated": "2025-12-07T15:56:50.190574",
+    "ally_count": 0,
+    "lineup": [
+      {
+        "player": "callum",
+        "role": "Runner",
+        "ally": false
+      }
+    ]
+  },
+  {
+    "war_id": "abf9a0c2-0930-42bd-bb2e-12fc8edfde99",
+    "war_type": "RT",
+    "team_name": "war matchmaking project",
+    "gathered": false,
+    "search_in_advance": false,
+    "start_time": "ASAP",
+    "last_updated": "2025-12-07T16:01:34.808210",
+    "ally_count": 0,
+    "lineup": [
+      {
+        "player": "callum",
+        "role": "Runner",
+        "ally": false
+      }
+    ]
   }
 ]
