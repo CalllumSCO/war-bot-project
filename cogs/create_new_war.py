@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import interactions
 from typing import Optional
 from classes.player import Player
@@ -16,6 +17,12 @@ from dotenv import load_dotenv
 
 load_dotenv(".env.local")
 
+PROJECT_ENV = os.getenv("PROJECT_ENVIRONMENT", "local").lower()
+DEV = PROJECT_ENV == "local"
+
+GUILD_ID = int(os.getenv("GUILD_ID")) if os.getenv("GUILD_ID") else 1436538029316636705
+SCOPES = [GUILD_ID] if DEV else None
+
 RT_CHANNEL_ID = os.getenv("RT_WAR_ID")
 CT_CHANNEL_ID = os.getenv("CT_WAR_ID")
 
@@ -28,7 +35,7 @@ class CreateNewWar(Extension):
     @slash_command(
         name="create-new-war",
         description="Starts a new war and posts it on the billboard. Default is RT.",
-        # add scopes=[GUILD_ID] during dev if you want instant registration
+        scopes=SCOPES
     )
     @slash_option(
         name="track_type",
@@ -40,26 +47,83 @@ class CreateNewWar(Extension):
             SlashCommandChoice(name="CT", value="CT"),
         ],
     )
+    @slash_option(
+        name="team_name",
+        description="Name of the team you're searching as.",
+        required=False,
+        opt_type=OptionType.STRING
+    )
+    @slash_option(
+        name="search_time",
+        description="Time in ET (GMT-5). Defaults to ASAP.",
+        required=False,
+        opt_type=OptionType.STRING
+    )
+    @slash_option(
+        name="is_bagger",
+        description="Determine whether the person searching for the war is a bagger.",
+        required=False,
+        opt_type=OptionType.BOOLEAN
+    )
     async def create_new_war(
         self,
         ctx: SlashContext,
         track_type: Optional[str] = None,
+        team_name: Optional[str] = None,
+        search_time: Optional[str] = None,
+        is_bagger: Optional[bool] = None,
     ):
-        # Determine channel based on option (default RT)
+
+        # Track type
         is_ct = (track_type or "RT").upper() == "CT"
         target_channel_id = CT_CHANNEL_ID if is_ct else RT_CHANNEL_ID
         track_label = "CT" if is_ct else "RT"
 
-        # Guild (server) info
-        team_name = ctx.guild.name if ctx.guild else "Unknown Server"
+        # Team name
+        if not team_name:
+            team_name = ctx.guild.name if ctx.guild else "Unknown Server"
+
+        # Search time
+        if not search_time:
+            search_time = "ASAP"
+        else:
+            raw_input = search_time.strip().upper()
+
+            if raw_input.isdigit():
+                hour = int(raw_input)
+                if hour < 0 or hour > 23:
+                    await ctx.send(
+                        "Invalid time. Please enter **0–23**, or **7PM / 11AM**.",
+                        ephemeral=True
+                    )
+                    return
+
+            elif re.fullmatch(r"(1[0-2]|[1-9])(AM|PM)", raw_input):
+                pass
+
+            else:
+                await ctx.send(
+                    "Invalid time format.\n\n Valid examples:\n"
+                    "- `0` → `23`\n"
+                    "- `7PM`\n"
+                    "- `11AM`\n\nAll times are ET (GMT-5).",
+                    ephemeral=True
+                )
+                return
+
+        # Bagger flag
+        if is_bagger is None:
+            is_bagger = False
+
         user_id = ctx.author.id
 
-        # Acknowledge to the user (ephemeral so you don’t spam the channel)
         await ctx.send(
             f"Command received in **{team_name}**.\n"
             f"Track type: **{track_label}**\n"
+            f"Bagger: **{is_bagger}**\n"
+            f"Search time: **{search_time} ET**\n"
             f"Your user ID is `{user_id}`.",
-            ephemeral=True,
+            ephemeral=True
         )
 
         # Using display name for now, will likely link with lounge in the future

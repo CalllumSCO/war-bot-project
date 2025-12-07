@@ -1,1 +1,36 @@
-[]
+[
+  {
+    "war_id": "5006f6bc-a9ae-4d4e-bbb4-7258b9c38d69",
+    "war_type": "RT",
+    "team_name": "war matchmaking project",
+    "gathered": false,
+    "search_in_advance": false,
+    "start_time": "2025-12-07T12:27:37.865541",
+    "last_updated": "2025-12-07T12:27:37.865550",
+    "ally_count": 0,
+    "lineup": [
+      {
+        "player": "callum",
+        "role": "Runner",
+        "ally": false
+      }
+    ]
+  },
+  {
+    "war_id": "93bf5ed7-8154-4c33-be4c-9e83105b8e12",
+    "war_type": "RT",
+    "team_name": "LV",
+    "gathered": false,
+    "search_in_advance": false,
+    "start_time": "2025-12-07T13:24:06.857003",
+    "last_updated": "2025-12-07T13:24:06.857013",
+    "ally_count": 0,
+    "lineup": [
+      {
+        "player": "callum",
+        "role": "Runner",
+        "ally": false
+      }
+    ]
+  }
+]
