@@ -118,7 +118,7 @@ class QueueInteractions(Extension):
             return
 
         if ctx.author.id != party.get("captain_discord_id"):
-            await ctx.send("Only the captain can post to the billboard.", ephemeral=True)
+            await ctx.send("Only the captain can post.", ephemeral=True)
             return
 
         post, message = post_party_to_billboard(party)
@@ -129,7 +129,7 @@ class QueueInteractions(Extension):
         party = get_party(party_id)
         await refresh_war_billboard_posts(self.bot, board_for_party(party), post)
         await self._refresh_lobby(party)
-        await ctx.send(f"{message}\n**Post ID:** `{post['war_id']}`", ephemeral=True)
+        await ctx.send(message, ephemeral=True)
 
     @component_callback(re.compile(r"^queue_cancel:(.+)$"))
     async def queue_cancel(self, ctx: ComponentContext):

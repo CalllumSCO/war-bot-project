@@ -1,0 +1,12 @@
+.git
+.venv
+venv
+__pycache__
+*.pyc
+.env
+.env.local
+sa-key.json
+temp/
+.cursor
+*.md
+agent-tools

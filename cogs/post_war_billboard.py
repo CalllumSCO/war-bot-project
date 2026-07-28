@@ -170,10 +170,31 @@ class PostWarBillboard(Extension):
 
     @Task.create(IntervalTrigger(seconds=30))
     async def sync_billboards(self):
+        await self._promote_scheduled_opponent_searches()
         for board in ALL_BOARD_KEYS:
             cache = self._cache_for(board)
             async for channel_id, channel in self._iter_accessible_channels(board):
                 await self.sync_one(board, channel_id, channel, cache)
+
+    async def _promote_scheduled_opponent_searches(self):
+        from utils.match_posting import promote_due_opponent_searches
+        from utils.queue_lobby import refresh_queue_lobby_message
+        from utils.queue_store import get_party
+
+        for board, war in promote_due_opponent_searches():
+            try:
+                await self.refresh_war(board, war)
+            except Exception as exc:
+                print(f"⚠️ Failed to refresh promoted war {war.get('war_id')}: {exc}")
+            party_id = war.get("party_id")
+            if not party_id:
+                continue
+            party = get_party(party_id)
+            if party:
+                try:
+                    await refresh_queue_lobby_message(self.bot, party)
+                except Exception:
+                    pass
 
     async def sync_one(self, board: str, channel_id: int, channel, cache: dict):
         latest_wars = self.load_json(board)

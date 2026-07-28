@@ -35,6 +35,7 @@ class QueueParty:
         match_post_id: str = None,
         search_mode: str = "allies",
         last_updated: str = None,
+        created_at: str = None,
     ):
         self.party_id = party_id or str(uuid.uuid4())
         self.team_id = team_id
@@ -51,7 +52,9 @@ class QueueParty:
         self.lobby_message_id = lobby_message_id
         self.match_post_id = match_post_id
         self.search_mode = search_mode
-        self.last_updated = last_updated or datetime.utcnow().isoformat()
+        now = datetime.now().isoformat()
+        self.created_at = created_at or now
+        self.last_updated = last_updated or now
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -70,6 +73,7 @@ class QueueParty:
             "lobby_message_id": self.lobby_message_id,
             "match_post_id": self.match_post_id,
             "search_mode": self.search_mode,
+            "created_at": self.created_at,
             "last_updated": self.last_updated,
         }
 
@@ -93,4 +97,5 @@ class QueueParty:
             match_post_id=data.get("match_post_id"),
             search_mode=data.get("search_mode", "allies"),
             last_updated=data.get("last_updated"),
+            created_at=data.get("created_at") or data.get("last_updated"),
         )

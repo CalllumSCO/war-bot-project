@@ -39,12 +39,27 @@ def can_seek_opponents(lineup: List[Dict[str, Any]]) -> bool:
     return is_roster_full(lineup) and has_minimum_bagger(lineup)
 
 
-def reconcile_search_mode(search_mode: str, lineup: List[Dict[str, Any]]) -> str:
-    """Promote to opponent search at 5/5+bagger; demote if roster drops below."""
+def reconcile_search_mode(
+    search_mode: str,
+    lineup: List[Dict[str, Any]],
+    *,
+    search_time: Optional[str] = "ASAP",
+    created_at: Optional[str] = None,
+) -> str:
+    """
+    Promote to opponent search at 5/5+bagger once search time allows it;
+    demote if roster drops below.
+    """
+    from utils.search_time import opponent_search_unlocked
+
     mode = search_mode or SEARCH_ALLIES
-    if mode == SEARCH_ALLIES and can_seek_opponents(lineup):
+    unlocked = opponent_search_unlocked(search_time, created_at=created_at)
+
+    if mode == SEARCH_ALLIES and can_seek_opponents(lineup) and unlocked:
         return SEARCH_OPPONENTS
     if mode == SEARCH_OPPONENTS and not can_seek_opponents(lineup):
+        return SEARCH_ALLIES
+    if mode == SEARCH_OPPONENTS and not unlocked:
         return SEARCH_ALLIES
     return mode
 
@@ -78,9 +93,9 @@ def resolve_search_mode(requested: Optional[str], lineup: List[Dict[str, Any]]) 
 
 def party_status_label(status: str) -> str:
     labels = {
-        "preparing": "Team Queue — forming roster",
-        "posted": "On hub billboard",
-        "matched": "Matched — awaiting gather",
+        "preparing": "Forming roster",
+        "posted": "Posted to hub",
+        "matched": "Matched",
         "cancelled": "Cancelled",
     }
     return labels.get(status, status)

@@ -65,7 +65,7 @@ def build_queue_party_buttons(party: Dict[str, Any]) -> List[ActionRow]:
         action_row = ActionRow(
             Button(
                 style=ButtonStyle.SUCCESS,
-                label="Post to Billboard",
+                label="Post to Hub",
                 custom_id=f"queue_post:{party_id}",
                 disabled=not has_minimum_bagger(lineup),
             ),

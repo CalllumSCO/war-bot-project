@@ -13,8 +13,16 @@ from interactions import (
 )
 
 from classes.player import Player
+from utils.ally_request_store import (
+    create_ally_request,
+    delete_ally_request,
+    get_ally_request,
+    pending_ally_for_war_and_user,
+    upsert_ally_request,
+)
 from utils.billboard_store import delete_war, find_war_across_boards, find_war_by_author, upsert_war
 from utils.billboard_refresh import refresh_war_billboard_posts
+from utils.colors import COLORS
 from utils.embeds import build_match_request_embed, build_war_embed
 from utils.guild_config import get_queue_channel_id
 from utils.lineup_lock import find_blocking_lineup, lineup_lock_message
@@ -32,11 +40,42 @@ from utils.roster import (
     is_roster_full,
     reconcile_search_mode,
 )
+from utils.search_time import format_search_time, opponent_search_unlocked
 from utils.war_buttons import build_war_buttons
 
 
 def _player_in_lineup(lineup: list, discord_id: int) -> bool:
     return any(entry.get("discord_id") == discord_id for entry in lineup)
+
+
+def _build_ally_request_embed(war: Dict[str, Any], request: Dict[str, Any]) -> interactions.Embed:
+    role = request.get("role", "Runner")
+    return interactions.Embed(
+        title="Ally join request",
+        description=(
+            f"<@{request['requester_discord_id']}> (**{request.get('requester_name')}**) "
+            f"wants to join **{war.get('team_name')}** as **{role}**.\n\n"
+            "Any current roster member can **Accept** or **Deny**."
+        ),
+        color=COLORS["allies"],
+    )
+
+
+def _ally_request_buttons(request_id: str) -> list:
+    return [
+        ActionRow(
+            Button(
+                style=ButtonStyle.SUCCESS,
+                label="Accept Ally",
+                custom_id=f"ally_accept:{request_id}",
+            ),
+            Button(
+                style=ButtonStyle.DANGER,
+                label="Deny Ally",
+                custom_id=f"ally_deny:{request_id}",
+            ),
+        )
+    ]
 
 
 def _touch_war(war: Dict[str, Any]) -> Dict[str, Any]:
@@ -136,18 +175,19 @@ class WarInteractions(Extension):
             ActionRow(
                 Button(
                     style=ButtonStyle.PRIMARY,
-                    label="Join as Runner",
+                    label="Request as Runner",
                     custom_id=f"war_ally_runner:{war_id}",
                 ),
                 Button(
                     style=ButtonStyle.SUCCESS,
-                    label="Join as Bagger",
+                    label="Request as Bagger",
                     custom_id=f"war_ally_bagger:{war_id}",
                 ),
             )
         ]
         await ctx.send(
-            f"Choose your role for **{war.get('team_name')}** ({ally_slots_remaining(war.get('lineup', []))} slot(s) left).",
+            f"Choose your role to **request** joining **{war.get('team_name')}** "
+            f"({ally_slots_remaining(war.get('lineup', []))} slot(s) left).",
             components=rows,
             ephemeral=True,
         )
@@ -181,32 +221,200 @@ class WarInteractions(Extension):
             await ctx.send("You are already on this roster.", ephemeral=True)
             return
 
+        if self._is_author(war, ctx.author.id):
+            await ctx.send("You cannot join your own war as an ally.", ephemeral=True)
+            return
+
         block = find_blocking_lineup(ctx.author.id, exclude_war_id=war_id)
         if block:
             await ctx.send(lineup_lock_message(block), ephemeral=True)
             return
 
+        if pending_ally_for_war_and_user(war_id, ctx.author.id):
+            await ctx.send("You already have a pending ally request for this war.", ephemeral=True)
+            return
+
         is_bagger = role_key == "bagger"
         role_name = "Bagger" if is_bagger else "Runner"
+        request = create_ally_request(
+            board,
+            war_id,
+            ctx.author.id,
+            ctx.author.display_name,
+            role_name,
+        )
+
+        queue_channel_id = get_queue_channel_id(war.get("origin_guild_id"))
+        if not queue_channel_id:
+            delete_ally_request(request["request_id"])
+            await ctx.send(
+                "That team has no queue channel configured — cannot send the request.",
+                ephemeral=True,
+            )
+            return
+
+        roster_mentions = " ".join(
+            f"<@{p['discord_id']}>"
+            for p in lineup
+            if p.get("discord_id")
+        )
+        try:
+            channel = await self.bot.fetch_channel(queue_channel_id)
+            message = await channel.send(
+                content=roster_mentions or None,
+                embeds=_build_ally_request_embed(war, request),
+                components=_ally_request_buttons(request["request_id"]),
+            )
+        except Exception as exc:
+            delete_ally_request(request["request_id"])
+            print(f"❌ Failed to post ally request: {exc}")
+            await ctx.send("Could not notify the team queue. Try again later.", ephemeral=True)
+            return
+
+        request["notification_channel_id"] = message.channel.id
+        request["notification_message_id"] = message.id
+        upsert_ally_request(request)
+
+        await ctx.send(
+            f"Request sent to join **{war.get('team_name')}** as **{role_name}** — "
+            "waiting for the team to accept.",
+            ephemeral=True,
+        )
+
+    @component_callback(re.compile(r"^ally_accept:(.+)$"))
+    async def ally_accept(self, ctx: ComponentContext):
+        request_id = ctx.custom_id.split(":", 1)[1]
+        request = get_ally_request(request_id)
+        if not request or request.get("status") != "pending":
+            await ctx.send("This ally request is no longer active.", ephemeral=True)
+            return
+
+        found = self._get_war(request["war_id"])
+        if not found:
+            delete_ally_request(request_id)
+            await ctx.send("The war post no longer exists.", ephemeral=True)
+            return
+
+        board, war = found
+        lineup = war.get("lineup", [])
+
+        if not _player_in_lineup(lineup, ctx.author.id):
+            await ctx.send("Only current roster members can accept ally requests.", ephemeral=True)
+            return
+
+        if war.get("status") != "open" or war.get("search_mode") != SEARCH_ALLIES:
+            delete_ally_request(request_id)
+            await ctx.send("This war is not accepting allies anymore.", ephemeral=True)
+            return
+
+        if is_roster_full(lineup):
+            delete_ally_request(request_id)
+            await ctx.send("Roster is already full (5/5).", ephemeral=True)
+            return
+
+        requester_id = request["requester_discord_id"]
+        if _player_in_lineup(lineup, requester_id):
+            delete_ally_request(request_id)
+            await ctx.send("That player is already on the roster.", ephemeral=True)
+            return
+
+        block = find_blocking_lineup(requester_id, exclude_war_id=war["war_id"])
+        if block:
+            await ctx.send(
+                f"Cannot accept — {lineup_lock_message(block)}",
+                ephemeral=True,
+            )
+            return
+
+        role_name = request.get("role", "Runner")
+        is_bagger = role_name == "Bagger"
         lineup.append(
             Player(
-                player=ctx.author.display_name,
+                player=request.get("requester_name") or str(requester_id),
                 role=role_name,
                 ally=True,
                 bagger=is_bagger,
-                discord_id=ctx.author.id,
+                discord_id=requester_id,
             ).to_dict()
         )
         war["lineup"] = lineup
-        war["search_mode"] = reconcile_search_mode(war.get("search_mode", SEARCH_ALLIES), lineup)
-
+        war["search_mode"] = reconcile_search_mode(
+            war.get("search_mode", SEARCH_ALLIES),
+            lineup,
+            search_time=war.get("start_time", "ASAP"),
+            created_at=war.get("created_at") or war.get("last_updated"),
+        )
         war = _save_and_refresh(board, war)
+
+        request["status"] = "accepted"
+        upsert_ally_request(request)
+        delete_ally_request(request_id)
+
+        try:
+            await ctx.message.edit(
+                content=f"Accepted <@{requester_id}> as **{role_name}** ally.",
+                embeds=[],
+                components=[],
+            )
+        except Exception:
+            pass
+
+        await self._refresh_war_on_billboards(board, war)
+        await self._refresh_team_lobby_for_war(war)
+
+        try:
+            user = await self.bot.fetch_user(requester_id)
+            await user.send(
+                f"Your ally request for **{war.get('team_name')}** as **{role_name}** was **accepted**."
+            )
+        except Exception:
+            pass
+
         await ctx.send(
-            f"You joined **{war.get('team_name')}** as **{role_name}**.",
+            f"Accepted <@{requester_id}> as **{role_name}**.",
             ephemeral=True,
         )
-        await self._refresh_war_on_billboards(board, war, ctx.message)
-        await self._refresh_team_lobby_for_war(war)
+
+    @component_callback(re.compile(r"^ally_deny:(.+)$"))
+    async def ally_deny(self, ctx: ComponentContext):
+        request_id = ctx.custom_id.split(":", 1)[1]
+        request = get_ally_request(request_id)
+        if not request or request.get("status") != "pending":
+            await ctx.send("This ally request is no longer active.", ephemeral=True)
+            return
+
+        found = self._get_war(request["war_id"])
+        if not found:
+            delete_ally_request(request_id)
+            await ctx.send("The war post no longer exists.", ephemeral=True)
+            return
+
+        _, war = found
+        if not _player_in_lineup(war.get("lineup", []), ctx.author.id):
+            await ctx.send("Only current roster members can deny ally requests.", ephemeral=True)
+            return
+
+        requester_id = request["requester_discord_id"]
+        delete_ally_request(request_id)
+
+        try:
+            await ctx.message.edit(
+                content=f"Denied ally request from <@{requester_id}>.",
+                embeds=[],
+                components=[],
+            )
+        except Exception:
+            pass
+
+        try:
+            user = await self.bot.fetch_user(requester_id)
+            await user.send(
+                f"Your ally request for **{war.get('team_name')}** was **denied**."
+            )
+        except Exception:
+            pass
+
+        await ctx.send("Ally request denied.", ephemeral=True)
 
     @component_callback(re.compile(r"^war_seek_opponents:(.+)$"))
     async def seek_opponents(self, ctx: ComponentContext):
@@ -223,14 +431,24 @@ class WarInteractions(Extension):
 
         if not can_seek_opponents(war.get("lineup", [])):
             await ctx.send(
-                "You need a **5/5** lineup with **at least 1 bagger** before looking for opponents.",
+                "You need a full **5/5** lineup with a bagger before looking for opponents.",
+                ephemeral=True,
+            )
+            return
+
+        if not opponent_search_unlocked(
+            war.get("start_time", "ASAP"),
+            created_at=war.get("created_at") or war.get("last_updated"),
+        ):
+            await ctx.send(
+                f"Opponent search opens at **{format_search_time(war.get('start_time'))}**.",
                 ephemeral=True,
             )
             return
 
         war["search_mode"] = SEARCH_OPPONENTS
         war = _save_and_refresh(board, war)
-        await ctx.send("Your post is now **Looking For Opponents**.", ephemeral=True)
+        await ctx.send("Now **looking for opponents**.", ephemeral=True)
         await self._refresh_war_on_billboards(board, war, ctx.message)
 
     @component_callback(re.compile(r"^war_seek_allies:(.+)$"))
@@ -248,7 +466,7 @@ class WarInteractions(Extension):
 
         war["search_mode"] = SEARCH_ALLIES
         war = _save_and_refresh(board, war)
-        await ctx.send("Your post is now **Looking For Allies**.", ephemeral=True)
+        await ctx.send("Now **looking for allies**.", ephemeral=True)
         await self._refresh_war_on_billboards(board, war, ctx.message)
 
     @component_callback(re.compile(r"^war_request:(.+)$"))

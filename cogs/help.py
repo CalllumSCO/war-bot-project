@@ -12,49 +12,38 @@ def _embed(title: str, description: str) -> interactions.Embed:
 HELP_TOPICS = {
     "queue": _embed(
         "Help · /queue",
-        "**Team-server commands** (captain + teammates):\n\n"
-        "• `/profile link` — link Lounge account or Wii friend code (required to join lineups)\n"
-        "• `/profile view` — ratings (RT/CT × runner/bagger), FC, team, last 5 wars\n"
-        "• `/queue start` — opens a form; creates a lobby in **#team-queue**\n"
-        "• Teammates join with lobby buttons (runner / bagger)\n"
-        "• `/queue post` — captain posts to the hub billboard (needs ≥1 bagger)\n"
-        "• `/queue status` — your lobby + hub post summary\n"
-        "• `/queue cancel` — captain removes the team queue\n\n"
-        "**Notes**\n"
-        "• Ranked is default; type `casual` in the start form for casual\n"
-        "• You can only be on **one** active lineup at a time\n"
-        "• At **5/5** with a bagger, posts auto-switch to Looking For Opponents",
+        "**Team server**\n\n"
+        "• `/profile link` — link Lounge or friend code\n"
+        "• `/profile view` — your ratings and recent wars\n"
+        "• `/queue start` — pick track, ranked/casual, and your role\n"
+        "• Casual: choose when opponent search should start (right away or a later hour)\n"
+        "• Teammates join from lobby buttons\n"
+        "• `/queue post` — post to the hub (needs a bagger)\n"
+        "• `/queue status` / `/queue cancel`\n\n"
+        "**Casual tip:** fill allies anytime; looking for opponents only goes live at your chosen time.",
     ),
     "war": _embed(
         "Help · /war",
-        "**Match channel only** (`war-vs-*`):\n\n"
-        "• `/war complete` — captain reports won/lost + margin + **RXX** (required)\n"
-        "• Scores load from the WiimmFI room via Lounge API when RXX lookup succeeds\n"
-        "• Linked FCs are checked against live WiimmFI when available — mismatches block auto-score\n"
-        "• `/war scores` — **fallback only** if RXX lookup fails (each captain submits)\n"
-        "• `/war confirm` — **both** captains must confirm the result\n"
-        "• `/war dispute` — either captain rejects the report\n"
-        "• `/war cancel` — request abort; opponent uses `/war approve-cancel`\n"
-        "• `/war decline-cancel` — opponent declines abort\n\n"
-        "**Score line format** (manual fallback)\n"
-        "`p1 p2 p3 p4 bagger [penalties]` — space separated, penalties optional\n\n"
-        "Everyone on the roster needs `/profile link` so their FC can be matched in the room.",
+        "**Match channel** (`war-vs-*`)\n\n"
+        "• `/war complete` — report result + RXX\n"
+        "• Scores pull from the WiimmFI room when possible\n"
+        "• `/war scores` — manual fallback if RXX lookup fails\n"
+        "• `/war confirm` — both captains confirm\n"
+        "• `/war dispute` — reject a report\n"
+        "• `/war cancel` / `/war approve-cancel` / `/war decline-cancel`",
     ),
     "billboard": _embed(
-        "Help · Hub billboard",
-        "Hub channels: `rt-ranked-wars`, `ct-ranked-wars`, `rt-casual-wars`, `ct-casual-wars`\n\n"
-        "• **Join as Ally** — fill a team looking for allies (5/5 max)\n"
-        "• **Request Match** — challenge a 5/5 team looking for opponents\n"
-        "• Defending captain **Accept** / **Decline** in their team queue\n"
-        "• `/war-view` — view your team's hub post",
+        "Help · Hub",
+        "Hub channels: RT/CT × ranked/casual\n\n"
+        "• **Request Ally** — ask to join a team (roster accepts in `#team-queue`)\n"
+        "• **Request Match** — challenge a full team looking for opponents\n"
+        "• `/war-view` — see your team’s hub post",
     ),
     "setup": _embed(
         "Help · Setup",
-        "**One-time per server (admin):**\n\n"
-        "• `/team` — register this Discord as your MKWii team\n"
-        "• `/setup` → **Create category** — RT/CT ranked+casual boards + team queue + how-to-use\n"
-        "• Or `/setup` → **Link …** for each board (RT/CT × ranked/casual) + team queue\n\n"
-        "• `/queue-status` — quick view of your lobby",
+        "**Admin (once per server)**\n\n"
+        "• `/team` — register this Discord as your team\n"
+        "• `/setup` — create or link hub boards + team queue",
     ),
 }
 

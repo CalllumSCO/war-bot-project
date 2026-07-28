@@ -33,44 +33,47 @@ def _embed_color(war: Dict[str, Any]) -> int:
 
 
 def build_war_embed(war: Dict[str, Any]) -> interactions.Embed:
+    from utils.search_time import format_search_time, opponent_search_unlocked
+
     war_type = war.get("war_type", "RT").upper()
     lineup = war.get("lineup", [])
     search_mode = war.get("search_mode", SEARCH_ALLIES)
     status = war.get("status", "open")
     mode = war.get("mode", "ranked")
     label = status_label(search_mode, status, lineup)
+    search_time = war.get("start_time", "ASAP")
+    unlocked = opponent_search_unlocked(
+        search_time,
+        created_at=war.get("created_at") or war.get("last_updated"),
+    )
 
     embed = interactions.Embed(
         title=f"{war.get('team_name', 'Unknown Team')} — {war_type} · {mode.title()}",
-        description=(
-            f"**Status:** {label}\n"
-            f"**Post ID:** `{war.get('war_id')}`"
-            + (f"\n**Party ID:** `{war.get('party_id')}`" if war.get("party_id") else "")
-        ),
+        description=f"**{label}**",
         color=_embed_color(war),
     )
 
     embed.add_field(
-        name="⏰ Search Time (ET)",
-        value=f"`{war.get('start_time', 'ASAP')}`",
-        inline=False,
+        name="Search time",
+        value=format_search_time(search_time),
+        inline=True,
     )
 
     embed.add_field(
-        name="📋 Roster",
+        name="Roster",
         value=roster_summary(lineup),
         inline=False,
     )
 
     if mode == MODE_CASUAL:
         embed.add_field(
-            name=f"👥 Lineup ({len(lineup)}/5)",
+            name=f"Lineup ({len(lineup)}/5)",
             value=format_lineup(lineup),
             inline=False,
         )
     else:
         embed.add_field(
-            name="📊 Team rank",
+            name="Team rank",
             value=format_average_rank(lineup, war_type),
             inline=False,
         )
@@ -78,7 +81,7 @@ def build_war_embed(war: Dict[str, Any]) -> interactions.Embed:
     matched = war.get("matched_opponent")
     if matched and status == "matched":
         embed.add_field(
-            name="⚔️ Opponent",
+            name="Opponent",
             value=(
                 f"**{matched.get('team_name', 'Unknown')}**\n"
                 f"Accepted by <@{matched.get('author_discord_id', '0')}>"
@@ -86,75 +89,79 @@ def build_war_embed(war: Dict[str, Any]) -> interactions.Embed:
             inline=False,
         )
 
-    if search_mode == SEARCH_ALLIES and not can_seek_opponents(lineup):
-        embed.add_field(
-            name="ℹ️ Allies needed",
-            value=(
-                "This post is **Looking For Allies**. Opponent search unlocks at "
-                "**5/5** with **at least 1 bagger**."
-            ),
-            inline=False,
-        )
+    if search_mode == SEARCH_ALLIES and status == "open":
+        if can_seek_opponents(lineup) and not unlocked:
+            embed.add_field(
+                name="Scheduled",
+                value=f"Full roster ready. Opponent search opens at **{format_search_time(search_time)}**.",
+                inline=False,
+            )
+        elif not can_seek_opponents(lineup):
+            embed.add_field(
+                name="Looking for allies",
+                value="Need a full roster with at least one bagger before opponent search.",
+                inline=False,
+            )
 
-    embed.set_footer(text="War Bot · Hub billboard")
+    embed.set_footer(text="War Bot")
     return embed
 
 
 def build_queue_party_embed(party: Dict[str, Any]) -> interactions.Embed:
+    from utils.search_time import format_search_time, opponent_search_unlocked
+
     war_type = party.get("war_type", "RT").upper()
     lineup = party.get("lineup", [])
     status = party.get("status", "preparing")
     label = party_status_label(status)
+    search_time = party.get("search_time", "ASAP")
+    unlocked = opponent_search_unlocked(
+        search_time,
+        created_at=party.get("created_at") or party.get("last_updated"),
+    )
 
     embed = interactions.Embed(
-        title=f"Queue Lobby — {party.get('team_name', 'Unknown Team')}",
+        title=f"{party.get('team_name', 'Unknown Team')} — queue",
         description=(
-            f"**Stage:** {label}\n"
-            f"**Track:** {war_type} · **Mode:** {party.get('mode', 'ranked').title()}\n"
-            f"**Party ID:** `{party.get('party_id')}`"
+            f"**{label}**\n"
+            f"{war_type} · {party.get('mode', 'ranked').title()} · {format_search_time(search_time)}"
         ),
         color=COLORS["waiting"] if status == "preparing" else COLORS["opponents"],
     )
 
     embed.add_field(
-        name="⏰ Search Time (ET)",
-        value=f"`{party.get('search_time', 'ASAP')}`",
-        inline=False,
-    )
-
-    embed.add_field(
-        name="📋 Roster",
+        name="Roster",
         value=roster_summary(lineup),
         inline=False,
     )
 
     embed.add_field(
-        name=f"👥 Team lineup ({len(lineup)}/5)",
+        name=f"Lineup ({len(lineup)}/5)",
         value=format_lineup(lineup),
         inline=False,
     )
 
     if status == "preparing":
-        embed.add_field(
-            name="ℹ️ Next step",
-            value=(
-                "Teammates from **this server** join here (1–5 players). "
-                "Captain posts to the hub billboard when ready — requires **≥1 bagger**. "
-                "Opponent search only unlocks at **5/5** with a bagger."
-            ),
-            inline=False,
-        )
+        tip = "Teammates join here. Captain posts when ready (needs a bagger)."
+        if party.get("mode") == MODE_CASUAL and not unlocked:
+            tip += (
+                f" You can look for allies anytime; opponent search opens at "
+                f"**{format_search_time(search_time)}**."
+            )
+        embed.add_field(name="Next step", value=tip, inline=False)
     elif status == "posted":
-        embed.add_field(
-            name="ℹ️ Hub status",
-            value=(
-                f"Billboard post `{party.get('match_post_id')}` is live. "
-                "Teammates can still join here while you look for allies on the hub."
-            ),
-            inline=False,
-        )
+        if party.get("search_mode") == SEARCH_OPPONENTS:
+            tip = "Live on the hub — looking for opponents."
+        elif can_seek_opponents(lineup) and not unlocked:
+            tip = (
+                f"Posted for allies. Opponent search opens at "
+                f"**{format_search_time(search_time)}**."
+            )
+        else:
+            tip = "Posted on the hub for allies. Teammates can still join here."
+        embed.add_field(name="Hub", value=tip, inline=False)
 
-    embed.set_footer(text="War Bot · Team server queue")
+    embed.set_footer(text="War Bot · team queue")
     return embed
 
 
@@ -248,10 +255,10 @@ def build_how_to_use_embed() -> interactions.Embed:
         name="Quick start",
         value=(
             "1. Admin: `/team` then `/setup`\n"
-            "2. Everyone: `/profile link` (Lounge auto-links or enter FC)\n"
-            "3. Captain: `/queue start` → teammates join lobby → `/queue post`\n"
-            "4. Hub: allies join or teams request a match\n"
-            "5. Matched: talk in `war-vs-*`, finish with `/war complete` + RXX"
+            "2. Everyone: `/profile link`\n"
+            "3. Captain: `/queue start` → lobby → `/queue post`\n"
+            "4. Hub: request allies or challenge for a match\n"
+            "5. Finish in `war-vs-*` with `/war complete`"
         ),
         inline=False,
     )

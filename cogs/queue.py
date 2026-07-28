@@ -1,14 +1,19 @@
-import interactions
+import re
 from typing import Optional
+
+import interactions
 from interactions import (
+    ActionRow,
     Extension,
-    Modal,
-    ShortText,
     SlashContext,
+    StringSelectMenu,
+    StringSelectOption,
+    ComponentContext,
     slash_command,
     slash_option,
     OptionType,
     SlashCommandChoice,
+    component_callback,
 )
 
 from classes.player import Player
@@ -20,6 +25,12 @@ from utils.embeds import build_queue_party_embed, build_queue_status_embed
 from utils.guild_config import get_queue_channel_id
 from utils.lineup_lock import find_blocking_lineup, lineup_lock_message
 from utils.match_service import board_for_party
+from utils.modal_labels import (
+    build_label_modal,
+    label_string_select,
+    patch_modal_context,
+    select_option,
+)
 from utils.queue_lobby import refresh_queue_lobby_message
 from utils.queue_service import cancel_party, post_party_to_billboard
 from utils.queue_buttons import build_queue_party_buttons
@@ -29,8 +40,10 @@ from utils.queue_store import (
     get_party,
     upsert_party,
 )
-from utils.search_time import parse_search_time
+from utils.search_time import format_search_time, parse_search_time
 from utils.team_store import get_team_by_guild
+
+patch_modal_context()
 
 
 def _parse_start_modal(kwargs: dict) -> tuple[Optional[dict], Optional[str]]:
@@ -38,13 +51,13 @@ def _parse_start_modal(kwargs: dict) -> tuple[Optional[dict], Optional[str]]:
     if track not in ("RT", "CT"):
         return None, "Track must be **RT** or **CT**."
 
-    role = (kwargs.get("role") or "runner").strip().lower()
-    if role in ("bagger", "bag", "b"):
+    bagger_raw = (kwargs.get("bagger") or "no").strip().lower()
+    if bagger_raw in ("yes", "y", "true", "bagger", "bag", "b", "1"):
         is_bagger = True
-    elif role in ("runner", "run", "r"):
+    elif bagger_raw in ("no", "n", "false", "runner", "run", "r", "0"):
         is_bagger = False
     else:
-        return None, "Role must be **runner** or **bagger**."
+        return None, "Bagger must be **yes** or **no**."
 
     mode_raw = (kwargs.get("mode") or "ranked").strip().lower()
     if mode_raw in ("casual", "c"):
@@ -54,16 +67,35 @@ def _parse_start_modal(kwargs: dict) -> tuple[Optional[dict], Optional[str]]:
     else:
         return None, "Mode must be **ranked** or **casual**."
 
-    search_time_value, time_error = parse_search_time(kwargs.get("search_time"))
-    if time_error:
-        return None, time_error
-
     return {
         "track": track,
         "is_bagger": is_bagger,
         "mode": mode,
-        "search_time": search_time_value,
     }, None
+
+
+def _casual_time_select(track: str, is_bagger: bool) -> StringSelectMenu:
+    options = [
+        StringSelectOption(
+            label="Right away",
+            value="ASAP",
+        )
+    ]
+    for hour in range(24):
+        options.append(
+            StringSelectOption(
+                label=f"{hour:02d}:00",
+                value=f"{hour:02d}",
+            )
+        )
+    bagger_flag = "1" if is_bagger else "0"
+    return StringSelectMenu(
+        *options,
+        custom_id=f"queue_casual_time:{track}:{bagger_flag}",
+        placeholder="When should opponent search start?",
+        min_values=1,
+        max_values=1,
+    )
 
 
 class QueueCommands(Extension):
@@ -73,13 +105,83 @@ class QueueCommands(Extension):
     async def _refresh_lobby_message(self, party: dict) -> None:
         await refresh_queue_lobby_message(self.bot, party)
 
-    def _require_team_server(self, ctx: SlashContext) -> tuple[dict, str] | tuple[None, None]:
+    def _require_team_server(self, ctx) -> tuple[dict, str] | tuple[None, None]:
         if not ctx.guild:
             return None, "Use this in your team's Discord server."
         team = get_team_by_guild(ctx.guild.id)
         if not team:
             return None, "Register this server with `/team` first."
         return team, ""
+
+    async def _create_queue_lobby(
+        self,
+        *,
+        bot,
+        guild,
+        author,
+        team: dict,
+        track: str,
+        is_bagger: bool,
+        mode: str,
+        search_time: str,
+        reply_ctx,
+    ) -> None:
+        if get_active_party_for_guild(guild.id):
+            await reply_ctx.send(
+                "This server already has an active queue. Use `/queue status`.",
+                ephemeral=True,
+            )
+            return
+
+        if get_active_party_for_user(author.id):
+            await reply_ctx.send("You are already in a queue party.", ephemeral=True)
+            return
+
+        block = find_blocking_lineup(author.id)
+        if block:
+            await reply_ctx.send(lineup_lock_message(block), ephemeral=True)
+            return
+
+        queue_channel_id = get_queue_channel_id(guild.id) or getattr(
+            reply_ctx, "channel_id", None
+        )
+        captain = Player(
+            player=author.display_name,
+            role="Bagger" if is_bagger else "Runner",
+            ally=False,
+            bagger=is_bagger,
+            discord_id=author.id,
+        )
+
+        party = QueueParty(
+            team_id=team["team_id"],
+            guild_id=guild.id,
+            team_name=team["name"],
+            war_type=track,
+            captain_discord_id=author.id,
+            search_time=search_time,
+            mode=mode,
+            status=PARTY_PREPARING,
+            lineup=[captain],
+            lobby_channel_id=queue_channel_id,
+        )
+        party_dict = party.to_dict()
+
+        channel = await bot.fetch_channel(queue_channel_id)
+        message = await channel.send(
+            embeds=build_queue_party_embed(party_dict),
+            components=build_queue_party_buttons(party_dict),
+        )
+        party_dict["lobby_message_id"] = message.id
+        upsert_party(party_dict)
+
+        time_note = format_search_time(search_time) if mode == MODE_CASUAL else "Right away"
+        await reply_ctx.send(
+            f"Lobby ready in <#{queue_channel_id}>.\n"
+            f"**{track}** · **{mode.title()}** · **{time_note}**\n"
+            "Teammates can join from the lobby buttons.",
+            ephemeral=True,
+        )
 
     @slash_command(
         name="queue",
@@ -103,96 +205,121 @@ class QueueCommands(Extension):
             await ctx.send(lineup_lock_message(block), ephemeral=True)
             return
 
-        modal = Modal(
-            ShortText(
-                label="Track (RT or CT)",
-                custom_id="track",
-                placeholder="RT",
-                required=True,
-                max_length=2,
-            ),
-            ShortText(
-                label="Your role",
-                custom_id="role",
-                placeholder="runner or bagger",
-                required=True,
-                max_length=12,
-            ),
-            ShortText(
-                label="Search time (ET)",
-                custom_id="search_time",
-                placeholder="ASAP",
-                required=False,
-                max_length=32,
-            ),
-            ShortText(
-                label="Mode",
-                custom_id="mode",
-                placeholder="ranked or casual",
-                required=False,
-                max_length=8,
-            ),
+        modal_payload, modal_handle = build_label_modal(
             title="Start queue",
+            labels=[
+                label_string_select(
+                    label="Track",
+                    custom_id="track",
+                    placeholder="Choose a track",
+                    options=[
+                        select_option("RT", "RT"),
+                        select_option("CT", "CT"),
+                    ],
+                ),
+                label_string_select(
+                    label="Mode",
+                    custom_id="mode",
+                    placeholder="Ranked or casual?",
+                    options=[
+                        select_option("Ranked", "ranked"),
+                        select_option("Casual", "casual"),
+                    ],
+                ),
+                label_string_select(
+                    label="Your role",
+                    custom_id="bagger",
+                    placeholder="Runner or bagger?",
+                    options=[
+                        select_option("Runner", "no"),
+                        select_option("Bagger", "yes"),
+                    ],
+                ),
+            ],
         )
-        await ctx.send_modal(modal)
-        m_ctx = await self.bot.wait_for_modal(modal, ctx.author)
+        await ctx.send_modal(modal_payload)
+        m_ctx = await self.bot.wait_for_modal(modal_handle, ctx.author)
 
         parsed, parse_error = _parse_start_modal(m_ctx.kwargs)
         if parse_error:
             await m_ctx.send(parse_error, ephemeral=True)
             return
 
-        if get_active_party_for_user(ctx.author.id):
-            await m_ctx.send("You are already in a queue party.", ephemeral=True)
+        if parsed["mode"] == MODE_RANKED:
+            await self._create_queue_lobby(
+                bot=self.bot,
+                guild=ctx.guild,
+                author=ctx.author,
+                team=team,
+                track=parsed["track"],
+                is_bagger=parsed["is_bagger"],
+                mode=MODE_RANKED,
+                search_time="ASAP",
+                reply_ctx=m_ctx,
+            )
             return
 
-        queue_channel_id = get_queue_channel_id(ctx.guild.id) or ctx.channel_id
-        captain = Player(
-            player=ctx.author.display_name,
-            role="Bagger" if parsed["is_bagger"] else "Runner",
-            ally=False,
-            bagger=parsed["is_bagger"],
-            discord_id=ctx.author.id,
-        )
-
-        party = QueueParty(
-            team_id=team["team_id"],
-            guild_id=ctx.guild.id,
-            team_name=team["name"],
-            war_type=parsed["track"],
-            captain_discord_id=ctx.author.id,
-            search_time=parsed["search_time"],
-            mode=parsed["mode"],
-            status=PARTY_PREPARING,
-            lineup=[captain],
-            lobby_channel_id=queue_channel_id,
-        )
-        party_dict = party.to_dict()
-
-        channel = await self.bot.fetch_channel(queue_channel_id)
-        message = await channel.send(
-            embeds=build_queue_party_embed(party_dict),
-            components=build_queue_party_buttons(party_dict),
-        )
-        party_dict["lobby_message_id"] = message.id
-        upsert_party(party_dict)
-
+        select = _casual_time_select(parsed["track"], parsed["is_bagger"])
         await m_ctx.send(
-            f"Queue lobby created in <#{queue_channel_id}>.\n"
-            "Teammates join via the lobby buttons.",
+            "When should you start looking for opponents?",
+            components=[ActionRow(select)],
             ephemeral=True,
         )
+
+    @component_callback(re.compile(r"^queue_casual_time:(RT|CT):([01])$"))
+    async def queue_casual_time_picked(self, ctx: ComponentContext):
+        match = re.match(r"^queue_casual_time:(RT|CT):([01])$", ctx.custom_id)
+        if not match:
+            await ctx.send("Invalid time selection.", ephemeral=True)
+            return
+
+        track = match.group(1)
+        is_bagger = match.group(2) == "1"
+        values = ctx.values or []
+        if not values:
+            await ctx.send("Pick a search time.", ephemeral=True)
+            return
+
+        search_time, time_error = parse_search_time(values[0])
+        if time_error:
+            await ctx.send(time_error, ephemeral=True)
+            return
+
+        team, error = self._require_team_server(ctx)
+        if error:
+            await ctx.send(error, ephemeral=True)
+            return
+
+        await self._create_queue_lobby(
+            bot=self.bot,
+            guild=ctx.guild,
+            author=ctx.author,
+            team=team,
+            track=track,
+            is_bagger=is_bagger,
+            mode=MODE_CASUAL,
+            search_time=search_time or "ASAP",
+            reply_ctx=ctx,
+        )
+
+        try:
+            await ctx.edit_origin(
+                content=f"Casual lobby started · **{track}** · **{format_search_time(search_time)}**",
+                components=[],
+            )
+        except Exception:
+            pass
 
     @slash_command(
         name="queue",
         description="Team queue",
         sub_cmd_name="post",
-        sub_cmd_description="Captain posts the lobby to the hub billboard.",
+        sub_cmd_description="Post your lobby to the hub.",
         scopes=SCOPES,
     )
     @slash_option(
         name="looking_for",
-        description="Allies (default) or opponents (5/5 + bagger)",
+        description="Looking for allies or opponents?",
         required=False,
         opt_type=OptionType.STRING,
         choices=[
@@ -222,7 +349,7 @@ class QueueCommands(Extension):
         party = get_party(party["party_id"])
         await refresh_war_billboard_posts(self.bot, board_for_party(party), post)
         await self._refresh_lobby_message(party)
-        await ctx.send(f"{message}\n**Post ID:** `{post['war_id']}`", ephemeral=True)
+        await ctx.send(message, ephemeral=True)
 
     @slash_command(
         name="queue",

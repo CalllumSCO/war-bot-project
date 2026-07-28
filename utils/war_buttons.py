@@ -39,7 +39,7 @@ def build_war_buttons(war: Dict[str, Any]) -> Optional[List[ActionRow]]:
             ActionRow(
                 Button(
                     style=ButtonStyle.PRIMARY,
-                    label="Join as Ally",
+                    label="Request Ally",
                     custom_id=f"war_join_ally:{war_id}",
                     disabled=join_disabled,
                 ),
@@ -56,7 +56,7 @@ def build_war_buttons(war: Dict[str, Any]) -> Optional[List[ActionRow]]:
                 ),
                 Button(
                     style=ButtonStyle.SECONDARY,
-                    label="Back to Allies",
+                    label="Looking for allies",
                     custom_id=f"war_seek_allies:{war_id}",
                 ),
             )
@@ -71,7 +71,7 @@ def build_war_buttons(war: Dict[str, Any]) -> Optional[List[ActionRow]]:
             ),
             Button(
                 style=ButtonStyle.SECONDARY,
-                label="Delete Post",
+                label="Delete",
                 custom_id=f"war_delete:{war_id}",
             ),
         )
