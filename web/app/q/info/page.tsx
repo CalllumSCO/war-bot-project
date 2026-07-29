@@ -88,15 +88,13 @@ export default function QueueInfoPage() {
             <H2 id="general">General info</H2>
             <p>
               War Queue connects teams looking for allies and opponents for Mario Kart Wii wars.
-              You build a group of up to <strong className="text-fg">5 players</strong> (typically 4
-              runners + 1 bagger), then look for a match on{" "}
+              You build a group of up to <strong className="text-fg">5 players</strong>, then look for a match on{" "}
               <strong className="text-fg">RT</strong> or <strong className="text-fg">CT</strong>, in{" "}
               <strong className="text-fg">ranked</strong> or <strong className="text-fg">casual</strong>{" "}
               mode.
             </p>
             <p>
-              Ranked games update your <strong className="text-fg">Scrims Rating (SR)</strong> —
-              TrueSkill under the hood, shown as a display score and tier. Casual games do not change
+              Ranked games update your <strong className="text-fg">Scrims Rating (SR).</strong> — Casual games do not change
               SR.
             </p>
           </section>
@@ -105,14 +103,15 @@ export default function QueueInfoPage() {
             <H2 id="before">Before joining</H2>
             <H3>Sign in with Discord</H3>
             <p>
-              Use <Link href="/login" className="text-accent hover:underline">Sign in</Link> and
+              <Link href="/login" className="text-accent hover:underline">Sign in</Link> and
               authorize Discord. Your War Bot profile is the same account used on Discord.
             </p>
             <H3>Link your Lounge / FC</H3>
             <p>
               On Discord, run <code className="rounded bg-elevated px-1.5 py-0.5 text-fg">/profile link</code>{" "}
               so ratings and identity stay consistent across both surfaces. You can view your profile
-              at <Link href="/me" className="text-accent hover:underline">/me</Link>.
+              at <Link href="/me" className="text-accent hover:underline">/me</Link>. It's recommended to link your profile while 
+              already online on <strong className="text-fg">Wiimmfi</strong> since it will autoparse your FC from the server.
             </p>
           </section>
 
@@ -120,7 +119,7 @@ export default function QueueInfoPage() {
             <H2 id="joining">Joining the queue</H2>
             <H3>Start a lobby</H3>
             <p>
-              On <Link href="/q" className="text-accent hover:underline">/q</Link>, choose track
+              On <Link href="/q" className="text-accent hover:underline">/q</Link>, choose track type
               (RT/CT), your role (runner/bagger), and ranked or casual, then{" "}
               <strong className="text-fg">Join the queue lobby</strong>. That creates{" "}
               <strong className="text-fg">My Group</strong> — you are not visible to others yet.
@@ -132,16 +131,16 @@ export default function QueueInfoPage() {
                 <em>Available</em> column so other web groups can invite or merge with you.
               </li>
               <li>
-                <strong className="text-fg">Leave queue</strong> — leave Available but keep your group.
+                <strong className="text-fg">Leave queue</strong> — Want to leave your current roster but keep playing? This drops you from the queue and allows you to start a new group immediately.
               </li>
               <li>
                 <strong className="text-fg">Post to allies billboard</strong> — post the same group to
-                Discord hub channels so Discord teams can request to join as allies. This is separate
+                Discord hub channels so Discord players can request to join as allies. This is separate
                 from web Available.
               </li>
             </ul>
             <p>
-              Icons on group cards show whether a group is filling on web, Discord, or both.
+              Icons on group cards show whether a group is filling on web, Discord, or both!
             </p>
           </section>
 
@@ -153,24 +152,20 @@ export default function QueueInfoPage() {
               <strong className="text-fg">Invitations</strong>.
             </p>
             <ul className="list-disc space-y-2 pl-5">
-              <li>Invite friends with a share link, or send invites from Available.</li>
+              <li>Invite friends with a share link, or send invites from the Available column.</li> 
               <li>
-                Accept invites from Invitations. Merging into a Discord-led hub group may send an ally
+                Accept invites from Invitations. Requesting to join a Discord-led hub group may send an ally
                 request to that team&apos;s Discord instead of absorbing instantly.
               </li>
               <li>
-                When a host has 4 runners and 1 slot left, Available filters to baggers only — runners
-                can&apos;t take that last seat.
-              </li>
-              <li>
                 Looking for opponents still requires a full <strong className="text-fg">5/5</strong>{" "}
-                with a bagger. Allies can post with a smaller roster.
+                lineup with a bagger. Allies can post to the billboard with a smaller roster to help fill up their squad.
               </li>
             </ul>
           </section>
 
           <section className="space-y-3">
-            <H2 id="discord">Discord hub</H2>
+            <H2 id="discord">Discord Hub</H2>
             <p>
               Team servers use hub channels (RT/CT × ranked/casual). Captains post with{" "}
               <code className="rounded bg-elevated px-1.5 py-0.5 text-fg">/queue post</code> or the
@@ -197,7 +192,7 @@ export default function QueueInfoPage() {
               When a match locks, Discord creates <code className="rounded bg-elevated px-1.5 py-0.5 text-fg">war-vs-*</code>{" "}
               channels and the web opens a match page. Finish with{" "}
               <code className="rounded bg-elevated px-1.5 py-0.5 text-fg">/war complete</code> (scores
-              from WiimmFI when possible).
+              from Wiimmfi when possible).
             </p>
             <H3>Match chat colors (Discord)</H3>
             <div className="mt-3 space-y-3">
@@ -212,7 +207,8 @@ export default function QueueInfoPage() {
                 <p className="mt-1">
                   Prefix with <code className="rounded bg-elevated px-1.5 py-0.5 text-fg">g:</code> or{" "}
                   <code className="rounded bg-elevated px-1.5 py-0.5 text-fg">.g </code> for team-only
-                  messages. Example: <code className="rounded bg-elevated px-1.5 py-0.5 text-fg">g: host FC is …</code>
+                  messages. Example: <code className="rounded bg-elevated px-1.5 py-0.5 text-fg">g: hey let's go a luck track</code>
+                  Players on the web will see 2 tabs in their chat, match and group. Those messages will be relayed to the Discord group chat channel in real time!
                 </p>
               </div>
             </div>
@@ -262,7 +258,7 @@ export default function QueueInfoPage() {
             <H2 id="other">Other topics</H2>
             <H3>Leave roster</H3>
             <p>
-              Non-captains who leave a group (Leave roster / Leave) drop off that Discord hub
+              Non-captains who leave a group (Leave roster / Leave) drop off that
               roster and immediately get a fresh solo lobby on the web — same as starting from the
               queue home screen — so you can invite or join another group right away.
             </p>
