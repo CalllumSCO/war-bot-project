@@ -7,7 +7,7 @@ from utils.roster import (
     PARTY_MATCHED,
     PARTY_POSTED,
     PARTY_PREPARING,
-    has_minimum_bagger,
+    ally_request_role_policy,
     is_roster_full,
     team_queue_lobby_active,
 )
@@ -38,19 +38,21 @@ def build_queue_party_buttons(party: Dict[str, Any]) -> List[ActionRow]:
         return []
 
     lineup = party.get("lineup", [])
+    policy = ally_request_role_policy(lineup)
+    full = is_roster_full(lineup)
 
     join_row = ActionRow(
         Button(
             style=ButtonStyle.PRIMARY,
             label="Join as Runner",
             custom_id=f"queue_join_runner:{party_id}",
-            disabled=is_roster_full(lineup),
+            disabled=full or policy == "bagger",
         ),
         Button(
             style=ButtonStyle.SUCCESS,
             label="Join as Bagger",
             custom_id=f"queue_join_bagger:{party_id}",
-            disabled=is_roster_full(lineup),
+            disabled=full or policy == "runner",
         ),
         Button(
             style=ButtonStyle.SECONDARY,
@@ -67,7 +69,7 @@ def build_queue_party_buttons(party: Dict[str, Any]) -> List[ActionRow]:
                 style=ButtonStyle.SUCCESS,
                 label="Post to Hub",
                 custom_id=f"queue_post:{party_id}",
-                disabled=not has_minimum_bagger(lineup),
+                disabled=False,
             ),
             Button(
                 style=ButtonStyle.DANGER,

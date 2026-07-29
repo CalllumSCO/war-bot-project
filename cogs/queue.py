@@ -18,13 +18,21 @@ from interactions import (
 
 from classes.player import Player
 from classes.queue_party import MODE_CASUAL, MODE_RANKED, PARTY_PREPARING, QueueParty
+from domain.match import board_for_party
+from domain.queue import (
+    cancel_party,
+    get_active_party_for_guild,
+    get_active_party_for_user,
+    get_party,
+    post_party_to_billboard,
+    upsert_party,
+)
 from utils.billboard_store import find_post_by_party_id
 from utils.billboard_refresh import refresh_war_billboard_posts
 from utils.config import SCOPES
 from utils.embeds import build_queue_party_embed, build_queue_status_embed
 from utils.guild_config import get_queue_channel_id
 from utils.lineup_lock import find_blocking_lineup, lineup_lock_message
-from utils.match_service import board_for_party
 from utils.modal_labels import (
     build_label_modal,
     label_string_select,
@@ -32,14 +40,7 @@ from utils.modal_labels import (
     select_option,
 )
 from utils.queue_lobby import refresh_queue_lobby_message
-from utils.queue_service import cancel_party, post_party_to_billboard
 from utils.queue_buttons import build_queue_party_buttons
-from utils.queue_store import (
-    get_active_party_for_guild,
-    get_active_party_for_user,
-    get_party,
-    upsert_party,
-)
 from utils.search_time import format_search_time, parse_search_time
 from utils.team_store import get_team_by_guild
 
@@ -141,6 +142,11 @@ class QueueCommands(Extension):
         if block:
             await reply_ctx.send(lineup_lock_message(block), ephemeral=True)
             return
+
+        # Ack within 3s before channel fetch / lobby post (avoids Unknown interaction).
+        from utils.discord_defer import defer_ephemeral
+
+        await defer_ephemeral(reply_ctx)
 
         queue_channel_id = get_queue_channel_id(guild.id) or getattr(
             reply_ctx, "channel_id", None
@@ -302,11 +308,16 @@ class QueueCommands(Extension):
             reply_ctx=ctx,
         )
 
+        # Clear the time picker after ack (edit_origin fails once deferred/responded).
         try:
-            await ctx.edit_origin(
-                content=f"Casual lobby started · **{track}** · **{format_search_time(search_time)}**",
-                components=[],
-            )
+            if ctx.message:
+                await ctx.message.edit(
+                    content=(
+                        f"Casual lobby started · **{track}** · "
+                        f"**{format_search_time(search_time)}**"
+                    ),
+                    components=[],
+                )
         except Exception:
             pass
 
@@ -340,6 +351,10 @@ class QueueCommands(Extension):
         if party.get("captain_discord_id") != ctx.author.id:
             await ctx.send("Only the captain can post.", ephemeral=True)
             return
+
+        from utils.discord_defer import defer_ephemeral
+
+        await defer_ephemeral(ctx)
 
         post, message = post_party_to_billboard(party, looking_for)
         if not post:
@@ -386,6 +401,10 @@ class QueueCommands(Extension):
         if party.get("captain_discord_id") != ctx.author.id:
             await ctx.send("Only the captain can cancel.", ephemeral=True)
             return
+
+        from utils.discord_defer import defer_ephemeral
+
+        await defer_ephemeral(ctx)
 
         cancel_party(party["party_id"])
         if party.get("lobby_message_id") and party.get("lobby_channel_id"):

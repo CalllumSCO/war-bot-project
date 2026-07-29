@@ -1,9 +1,14 @@
+"""Hub billboard posts — Postgres hub_posts or temp/billboard-data JSON files."""
+
+from __future__ import annotations
+
 import json
 import os
 from typing import Any, Dict, List, Optional
 
 from utils.boards import ALL_BOARD_KEYS, board_key as make_board_key
 from utils.config import DATA_DIR
+from utils.db import get_conn, use_json_stores
 
 BILLBOARD_DIR = os.path.join(DATA_DIR, "billboard-data")
 
@@ -13,7 +18,6 @@ def billboard_path(board: str) -> str:
 
 
 def _legacy_path(board: str) -> Optional[str]:
-    """Migrate old rt-billboard.json → rt-ranked-billboard.json."""
     if board == "rt-ranked":
         legacy = os.path.join(BILLBOARD_DIR, "rt-billboard.json")
         return legacy if os.path.exists(legacy) else None
@@ -23,7 +27,31 @@ def _legacy_path(board: str) -> Optional[str]:
     return None
 
 
+def _parse(value: Any) -> Dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        return json.loads(value)
+    return {}
+
+
 def load_wars(board: str) -> List[Dict[str, Any]]:
+    if not use_json_stores():
+        try:
+            with get_conn() as conn:
+                cursor = conn.cursor()
+                try:
+                    cursor.execute(
+                        "SELECT data FROM hub_posts WHERE board = %s",
+                        (board,),
+                    )
+                    rows = cursor.fetchall()
+                finally:
+                    cursor.close()
+            return [_parse(r[0]) for r in rows]
+        except Exception as exc:
+            print(f"⚠️ hub_posts load failed, falling back to JSON: {exc}")
+
     path = billboard_path(board)
     if not os.path.exists(path):
         legacy = _legacy_path(board)
@@ -45,6 +73,43 @@ def load_wars(board: str) -> List[Dict[str, Any]]:
 
 
 def save_wars(board: str, wars: List[Dict[str, Any]]) -> None:
+    if not use_json_stores():
+        try:
+            with get_conn() as conn:
+                cursor = conn.cursor()
+                try:
+                    cursor.execute("DELETE FROM hub_posts WHERE board = %s", (board,))
+                    for war in wars:
+                        cursor.execute(
+                            """
+                            INSERT INTO hub_posts (
+                              war_id, board, party_id, author_id, search_mode, status, data, updated_at
+                            ) VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, NOW())
+                            ON CONFLICT (war_id) DO UPDATE SET
+                              board = EXCLUDED.board,
+                              party_id = EXCLUDED.party_id,
+                              author_id = EXCLUDED.author_id,
+                              search_mode = EXCLUDED.search_mode,
+                              status = EXCLUDED.status,
+                              data = EXCLUDED.data,
+                              updated_at = NOW()
+                            """,
+                            (
+                                war.get("war_id"),
+                                board,
+                                war.get("party_id"),
+                                war.get("author_discord_id"),
+                                war.get("search_mode") or war.get("looking_for"),
+                                war.get("status", "open"),
+                                json.dumps(war),
+                            ),
+                        )
+                finally:
+                    cursor.close()
+            return
+        except Exception as exc:
+            print(f"⚠️ hub_posts save failed, writing JSON: {exc}")
+
     path = billboard_path(board)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as handle:
@@ -66,6 +131,41 @@ def find_war_by_author(board: str, author_discord_id: int) -> Optional[Dict[str,
 
 
 def upsert_war(board: str, war: Dict[str, Any]) -> None:
+    if not use_json_stores():
+        try:
+            with get_conn() as conn:
+                cursor = conn.cursor()
+                try:
+                    cursor.execute(
+                        """
+                        INSERT INTO hub_posts (
+                          war_id, board, party_id, author_id, search_mode, status, data, updated_at
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, NOW())
+                        ON CONFLICT (war_id) DO UPDATE SET
+                          board = EXCLUDED.board,
+                          party_id = EXCLUDED.party_id,
+                          author_id = EXCLUDED.author_id,
+                          search_mode = EXCLUDED.search_mode,
+                          status = EXCLUDED.status,
+                          data = EXCLUDED.data,
+                          updated_at = NOW()
+                        """,
+                        (
+                            war.get("war_id"),
+                            board,
+                            war.get("party_id"),
+                            war.get("author_discord_id"),
+                            war.get("search_mode") or war.get("looking_for"),
+                            war.get("status", "open"),
+                            json.dumps(war),
+                        ),
+                    )
+                finally:
+                    cursor.close()
+            return
+        except Exception as exc:
+            print(f"⚠️ hub_posts upsert failed: {exc}")
+
     wars = load_wars(board)
     war_id = war.get("war_id")
     updated = False
@@ -76,15 +176,37 @@ def upsert_war(board: str, war: Dict[str, Any]) -> None:
             break
     if not updated:
         wars.append(war)
-    save_wars(board, wars)
+    # Avoid recursive DB path when falling back
+    path = billboard_path(board)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump(wars, handle, indent=2, ensure_ascii=False)
 
 
 def delete_war(board: str, war_id: str) -> bool:
+    if not use_json_stores():
+        try:
+            with get_conn() as conn:
+                cursor = conn.cursor()
+                try:
+                    cursor.execute(
+                        "DELETE FROM hub_posts WHERE board = %s AND war_id = %s",
+                        (board, war_id),
+                    )
+                    return cursor.rowcount > 0
+                finally:
+                    cursor.close()
+        except Exception:
+            pass
+
     wars = load_wars(board)
     new_wars = [war for war in wars if war.get("war_id") != war_id]
     if len(new_wars) == len(wars):
         return False
-    save_wars(board, new_wars)
+    path = billboard_path(board)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump(new_wars, handle, indent=2, ensure_ascii=False)
     return True
 
 

@@ -1,0 +1,56 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Companion: Web",
+      "type": "npm",
+      "script": "dev",
+      "path": "web",
+      "isBackground": true,
+      "problemMatcher": {
+        "owner": "next",
+        "pattern": { "regexp": "^$" },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": ".",
+          "endsPattern": "(Ready|started server|Local:)"
+        }
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "group": "companion"
+      }
+    },
+    {
+      "label": "Companion: API",
+      "type": "shell",
+      "command": "${command:python.interpreterPath} -m uvicorn api.main:app --reload --host 127.0.0.1 --port 8000",
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "envFile": "${workspaceFolder}/.env.local"
+      },
+      "isBackground": true,
+      "problemMatcher": {
+        "owner": "uvicorn",
+        "pattern": { "regexp": "^$" },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": ".",
+          "endsPattern": "(Application startup complete|Uvicorn running)"
+        }
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "group": "companion"
+      }
+    },
+    {
+      "label": "Companion: API + Web",
+      "dependsOn": ["Companion: API", "Companion: Web"],
+      "dependsOrder": "parallel",
+      "problemMatcher": []
+    }
+  ]
+}

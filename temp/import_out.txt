@@ -1,0 +1,2 @@
+﻿(party: Dict[str, Any]) -> Tuple[bool, str | None, Tuple[str, str] | None]
+EXIT=0

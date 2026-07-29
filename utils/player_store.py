@@ -1,8 +1,13 @@
+"""Player MMR / ratings — Postgres `players` table or temp/player-mmr.json."""
+
+from __future__ import annotations
+
 import json
 import os
 from typing import Any, Dict, Optional
 
 from utils.config import DATA_DIR
+from utils.db import get_conn, use_json_stores
 
 DEFAULT_PLAYER_MMR = 10_000
 PLAYER_STORE_PATH = os.path.join(DATA_DIR, "player-mmr.json")
@@ -105,6 +110,33 @@ def _ensure_player_shape(player: Dict[str, Any]) -> Dict[str, Any]:
     return player
 
 
+def _parse_json_field(value: Any, default: Any) -> Any:
+    if value is None:
+        return default
+    if isinstance(value, (dict, list)):
+        return value
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            return default
+    return default
+
+
+def _row_to_player(row: tuple) -> Dict[str, Any]:
+    discord_id, mmr, wins, losses, ratings, record = row
+    return _ensure_player_shape(
+        {
+            "discord_id": int(discord_id),
+            "mmr": int(mmr or DEFAULT_PLAYER_MMR),
+            "wins": int(wins or 0),
+            "losses": int(losses or 0),
+            "ratings": _parse_json_field(ratings, _default_ratings()),
+            "record": _parse_json_field(record, _default_role_record()),
+        }
+    )
+
+
 def _load_all() -> Dict[str, Any]:
     if not os.path.exists(PLAYER_STORE_PATH):
         return {"players": {}}
@@ -122,12 +154,64 @@ def _save_all(data: Dict[str, Any]) -> None:
         json.dump(data, handle, indent=2, ensure_ascii=False)
 
 
+def _db_upsert_player(player: Dict[str, Any]) -> None:
+    shaped = _ensure_player_shape(dict(player))
+    discord_id = int(shaped["discord_id"])
+    with get_conn() as conn:
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                """
+                INSERT INTO players (
+                  discord_id, mmr, wins, losses, ratings, record, updated_at
+                ) VALUES (
+                  %s, %s, %s, %s, %s::jsonb, %s::jsonb, NOW()
+                )
+                ON CONFLICT (discord_id) DO UPDATE SET
+                  mmr = EXCLUDED.mmr,
+                  wins = EXCLUDED.wins,
+                  losses = EXCLUDED.losses,
+                  ratings = EXCLUDED.ratings,
+                  record = EXCLUDED.record,
+                  updated_at = NOW()
+                """,
+                (
+                    discord_id,
+                    int(shaped["mmr"]),
+                    int(shaped["wins"]),
+                    int(shaped["losses"]),
+                    json.dumps(shaped["ratings"]),
+                    json.dumps(shaped["record"]),
+                ),
+            )
+        finally:
+            cursor.close()
+
+
 def get_player(discord_id: int) -> Dict[str, Any]:
-    data = _load_all()
-    key = str(discord_id)
-    if key not in data["players"]:
+    if use_json_stores():
+        data = _load_all()
+        key = str(discord_id)
+        if key not in data["players"]:
+            return _blank_player(discord_id)
+        return _ensure_player_shape(dict(data["players"][key]))
+
+    with get_conn() as conn:
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                """
+                SELECT discord_id, mmr, wins, losses, ratings, record
+                FROM players WHERE discord_id = %s
+                """,
+                (int(discord_id),),
+            )
+            row = cursor.fetchone()
+        finally:
+            cursor.close()
+    if not row:
         return _blank_player(discord_id)
-    return _ensure_player_shape(dict(data["players"][key]))
+    return _row_to_player(row)
 
 
 def get_rating(
@@ -152,9 +236,7 @@ def apply_player_delta(
     bagger: bool = False,
     role: Optional[str] = None,
 ) -> Dict[str, Any]:
-    data = _load_all()
-    key = str(discord_id)
-    current = _ensure_player_shape(data["players"].get(key, _blank_player(discord_id)))
+    current = _ensure_player_shape(get_player(discord_id))
     track = _normalize_track(war_type)
     role_key = _normalize_role(bagger=bagger, role=role)
 
@@ -170,23 +252,71 @@ def apply_player_delta(
     current["losses"] = sum(current["record"][t][r]["losses"] for t in TRACKS for r in ROLES)
     current["mmr"] = _average_ratings(current["ratings"])
     current["discord_id"] = discord_id
-    data["players"][key] = current
-    _save_all(data)
+
+    if use_json_stores():
+        data = _load_all()
+        data["players"][str(discord_id)] = current
+        _save_all(data)
+    else:
+        _db_upsert_player(current)
     return current
 
 
 def set_player_mmr(discord_id: int, mmr: int) -> Dict[str, Any]:
     """Set all four ratings to the same value (admin/dev helper)."""
-    data = _load_all()
-    key = str(discord_id)
-    current = _ensure_player_shape(data["players"].get(key, _blank_player(discord_id)))
+    current = _ensure_player_shape(get_player(discord_id))
     value = max(0, int(mmr))
     current["ratings"] = _default_ratings(value)
     current["mmr"] = value
     current["discord_id"] = discord_id
-    data["players"][key] = current
-    _save_all(data)
+
+    if use_json_stores():
+        data = _load_all()
+        data["players"][str(discord_id)] = current
+        _save_all(data)
+    else:
+        _db_upsert_player(current)
     return current
+
+
+def replace_all_players(players: Dict[str, Any]) -> None:
+    """Bulk replace player MMR rows (used by rebuild)."""
+    if use_json_stores():
+        _save_all({"players": players})
+        return
+
+    with get_conn() as conn:
+        cursor = conn.cursor()
+        try:
+            for key, player in players.items():
+                shaped = _ensure_player_shape(dict(player))
+                shaped["discord_id"] = int(shaped.get("discord_id") or key)
+                cursor.execute(
+                    """
+                    INSERT INTO players (
+                      discord_id, mmr, wins, losses, ratings, record, updated_at
+                    ) VALUES (
+                      %s, %s, %s, %s, %s::jsonb, %s::jsonb, NOW()
+                    )
+                    ON CONFLICT (discord_id) DO UPDATE SET
+                      mmr = EXCLUDED.mmr,
+                      wins = EXCLUDED.wins,
+                      losses = EXCLUDED.losses,
+                      ratings = EXCLUDED.ratings,
+                      record = EXCLUDED.record,
+                      updated_at = NOW()
+                    """,
+                    (
+                        int(shaped["discord_id"]),
+                        int(shaped["mmr"]),
+                        int(shaped["wins"]),
+                        int(shaped["losses"]),
+                        json.dumps(shaped["ratings"]),
+                        json.dumps(shaped["record"]),
+                    ),
+                )
+        finally:
+            cursor.close()
 
 
 def rebuild_players_from_war_results() -> Dict[str, Any]:
@@ -224,9 +354,6 @@ def rebuild_players_from_war_results() -> Dict[str, Any]:
                 raw_id = player.get("discord_id")
                 if not raw_id:
                     continue
-                # Always sign by the lineup side. Do not use player_mmr_deltas —
-                # that map is one value per Discord ID and breaks if someone
-                # appears on both sides (ally on one team, core on the other).
                 delta = team_delta if won else -team_delta
 
                 current = ensure(int(raw_id))
@@ -253,7 +380,6 @@ def rebuild_players_from_war_results() -> Dict[str, Any]:
         )
         current["mmr"] = _average_ratings(current["ratings"])
 
-    data = {"players": players}
-    _save_all(data)
+    replace_all_players(players)
     print(f"Rebuilt MMR for {len(players)} players from {applied} ranked lineup slots.")
-    return data
+    return {"players": players}

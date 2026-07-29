@@ -20,7 +20,11 @@ def lineup_size(lineup: List[Dict[str, Any]]) -> int:
 
 
 def count_baggers(lineup: List[Dict[str, Any]]) -> int:
-    return sum(1 for player in lineup or [] if player.get("bagger") or player.get("role") == "Bagger")
+    return sum(
+        1
+        for player in lineup or []
+        if player.get("bagger") or str(player.get("role") or "").lower() == "bagger"
+    )
 
 
 def has_minimum_bagger(lineup: List[Dict[str, Any]]) -> bool:
@@ -33,6 +37,85 @@ def is_roster_full(lineup: List[Dict[str, Any]]) -> bool:
 
 def ally_slots_remaining(lineup: List[Dict[str, Any]]) -> int:
     return max(0, ROSTER_SIZE - lineup_size(lineup))
+
+
+def count_runners(lineup: List[Dict[str, Any]]) -> int:
+    return max(0, lineup_size(lineup) - count_baggers(lineup))
+
+
+def baggers_still_needed(lineup: List[Dict[str, Any]]) -> int:
+    return max(0, MIN_BAGGERS - count_baggers(lineup))
+
+
+def only_baggers_can_fill(lineup: List[Dict[str, Any]]) -> bool:
+    """
+    True when every open slot must be a bagger — e.g. 4 runners with 1 slot left.
+    Allies can still post/search before this; Available then filters to baggers only.
+    """
+    slots = ally_slots_remaining(lineup)
+    needed = baggers_still_needed(lineup)
+    return slots > 0 and needed > 0 and needed >= slots
+
+
+def ally_request_role_policy(lineup: List[Dict[str, Any]]) -> Optional[str]:
+    """
+    What role an ally requester must use for this roster:
+    - "bagger" — 4 runners / bagger-only fill
+    - "runner" — roster already has a bagger (remaining slots are runners)
+    - "choose" — no bagger yet and not at 4 runners (requester picks in a modal)
+    - None — roster full
+    """
+    if is_roster_full(lineup):
+        return None
+    if only_baggers_can_fill(lineup):
+        return "bagger"
+    if has_minimum_bagger(lineup):
+        return "runner"
+    return "choose"
+
+
+def role_allowed_for_lineup(lineup: List[Dict[str, Any]], *, bagger: bool) -> bool:
+    """Whether a player of this role may join the lineup."""
+    policy = ally_request_role_policy(lineup)
+    if policy is None:
+        return False
+    if policy == "bagger":
+        return bool(bagger)
+    if policy == "runner":
+        return not bagger
+    return True
+
+
+def lineup_all_baggers(lineup: List[Dict[str, Any]]) -> bool:
+    size = lineup_size(lineup)
+    return size > 0 and count_baggers(lineup) == size
+
+
+def can_merge_as_allies(host_lineup: List[Dict[str, Any]], guest_lineup: List[Dict[str, Any]]) -> bool:
+    """
+    Host absorbing guest (Invite): fit in slots + bagger rules.
+
+    If the host already has a bagger, the guest must be runners-only.
+    If the host is in bagger-only fill (4 runners / 1 slot), the guest must be all baggers.
+    """
+    guest_size = lineup_size(guest_lineup)
+    if guest_size <= 0:
+        return False
+    if guest_size > ally_slots_remaining(host_lineup):
+        return False
+    if only_baggers_can_fill(host_lineup):
+        return lineup_all_baggers(guest_lineup)
+    if has_minimum_bagger(host_lineup) and count_baggers(guest_lineup) > 0:
+        return False
+    return True
+
+
+def can_join_host_as_allies(host_lineup: List[Dict[str, Any]], guest_lineup: List[Dict[str, Any]]) -> bool:
+    """
+    Guest requesting to join host (Request to join): same slot + bagger rules,
+    with host = the Available group and guest = the viewer's group.
+    """
+    return can_merge_as_allies(host_lineup, guest_lineup)
 
 
 def can_seek_opponents(lineup: List[Dict[str, Any]]) -> bool:
@@ -94,7 +177,7 @@ def resolve_search_mode(requested: Optional[str], lineup: List[Dict[str, Any]]) 
 def party_status_label(status: str) -> str:
     labels = {
         "preparing": "Forming roster",
-        "posted": "Posted to hub",
+        "posted": "In queue",
         "matched": "Matched",
         "cancelled": "Cancelled",
     }

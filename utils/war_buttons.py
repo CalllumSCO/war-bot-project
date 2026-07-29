@@ -5,7 +5,6 @@ from interactions import ActionRow, Button, ButtonStyle
 from utils.roster import (
     SEARCH_ALLIES,
     SEARCH_OPPONENTS,
-    ally_slots_remaining,
     can_seek_opponents,
     is_roster_full,
 )

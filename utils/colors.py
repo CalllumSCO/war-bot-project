@@ -9,4 +9,6 @@ COLORS = {
     "error": 0xE74C3C,
     "default": 0x95A5A6,
     "waiting": 0xF1C40F,
+    "match_chat": 0x3B9EFF,
+    "group_chat": 0x2ECC71,
 }

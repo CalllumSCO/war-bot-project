@@ -1,17 +1,36 @@
+import os
+
 import interactions
-from interactions import Extension, Modal, ShortText, SlashContext, slash_command
+from interactions import (
+    ActionRow,
+    Button,
+    ButtonStyle,
+    Extension,
+    File,
+    Modal,
+    ShortText,
+    SlashContext,
+    listen,
+    slash_command,
+)
 
 from utils.config import SCOPES
+from utils.discord_defer import defer_ephemeral, send_ephemeral
 from utils.embeds import build_profile_embed
 from utils.player_links import link_manual_friend_code, resolve_friend_code, try_lounge_link
 from utils.player_profile_store import get_profile
 from utils.player_store import get_player
 from utils.profile_view import recent_wars_for_profile, resolve_profile_team
+from utils.rank_icons import icon_url, local_rank_path, warm_rank_icon_cache
 
 
 class ProfileCommands(Extension):
     def __init__(self, bot: interactions.Client):
         self.bot = bot
+
+    @listen()
+    async def on_startup(self):
+        await warm_rank_icon_cache(self.bot)
 
     @slash_command(
         name="profile",
@@ -35,22 +54,16 @@ class ProfileCommands(Extension):
             return
 
         # Discord: modal must be the initial response — don't send a message first.
-        if lounge_error:
-            await ctx.send(
-                f"Lounge lookup failed: {lounge_error}\n"
-                "Fix the API key/config, then run `/profile link` again.\n"
-                "Or ask an admin — manual FC linking needs a successful bot response.",
-                ephemeral=True,
-            )
-            return
-
         lounge_name = None
         if lounge_player:
             lounge_name = lounge_player.get("player_name") or lounge_player.get("name")
 
-        title = f"FC for Lounge: {lounge_name}" if lounge_name else "Link friend code"
+        if lounge_name:
+            title = f"FC for Lounge: {lounge_name}"
+        else:
+            title = "Link friend code"
         if len(title) > 45:
-            title = "Link friend code (Lounge found)"
+            title = "Link friend code"
 
         modal = Modal(
             ShortText(
@@ -80,6 +93,15 @@ class ProfileCommands(Extension):
                 "Run `/profile view` to see your card.",
                 ephemeral=True,
             )
+        elif lounge_error:
+            await m_ctx.send(
+                f"Friend code saved: `{linked.get('friend_code')}`\n"
+                "Lounge lookup wasn’t available, so this is a manual FC link "
+                "(still enough for wars).\n"
+                "If you later link Discord on Lounge, run `/profile link` again.\n"
+                "Run `/profile view` to see your card.",
+                ephemeral=True,
+            )
         else:
             await m_ctx.send(
                 f"Friend code saved: `{linked.get('friend_code')}`\n"
@@ -97,7 +119,9 @@ class ProfileCommands(Extension):
         scopes=SCOPES,
     )
     async def profile_view(self, ctx: SlashContext):
-        await ctx.defer(ephemeral=True)
+        await defer_ephemeral(ctx)
+        await warm_rank_icon_cache(self.bot, force=True)
+
         profile = get_profile(ctx.author.id)
         fc = (profile or {}).get("friend_code")
         if not fc:
@@ -106,10 +130,7 @@ class ProfileCommands(Extension):
             profile = get_profile(ctx.author.id) or profile
 
         if not profile and not fc:
-            await ctx.send(
-                "No profile linked yet. Run `/profile link` first.",
-                ephemeral=True,
-            )
+            await send_ephemeral(ctx, "No profile linked yet. Run `/profile link` first.")
             return
 
         if profile and fc and not profile.get("friend_code"):
@@ -125,7 +146,7 @@ class ProfileCommands(Extension):
         except Exception:
             avatar = None
 
-        embed = build_profile_embed(
+        embed, top_rank = build_profile_embed(
             display_name=ctx.author.display_name,
             discord_id=ctx.author.id,
             avatar_url=avatar,
@@ -135,7 +156,33 @@ class ProfileCommands(Extension):
             team_mmr=team_mmr,
             recent=recent_wars_for_profile(ctx.author.id, limit=5),
         )
-        await ctx.send(embeds=embed, ephemeral=True)
+
+        files = []
+        # Local assets are the reliable thumbnail source; Discord role CDN is a bonus.
+        path = local_rank_path(top_rank)
+        if path is not None:
+            files.append(File(path))
+            embed.set_thumbnail(url=f"attachment://{path.name}")
+        elif icon_url(top_rank):
+            embed.set_thumbnail(url=icon_url(top_rank))
+
+        web_base = (os.getenv("WEB_BASE_URL") or "http://localhost:3000").rstrip("/")
+        profile_url = f"{web_base}/u/{ctx.author.id}"
+        components = [
+            ActionRow(
+                Button(
+                    style=ButtonStyle.URL,
+                    label="Open web profile",
+                    url=profile_url,
+                )
+            )
+        ]
+        await send_ephemeral(
+            ctx,
+            embeds=embed,
+            components=components,
+            files=files or None,
+        )
 
 
 def setup(bot: interactions.Client):

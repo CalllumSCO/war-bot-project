@@ -10,8 +10,10 @@ from interactions import (
 
 from utils.colors import COLORS
 from utils.config import SCOPES
-from utils.embeds import build_how_to_use_embed, build_setup_embed
+from utils.embeds import build_setup_embed
 from utils.guild_config import delete_guild_config, get_guild_config, upsert_guild_config
+from utils.guild_config_schema import CONFIG_SCHEMA_VERSION, HOW_TO_GUIDE_VERSION
+from utils.how_to_use import refresh_how_to_use_channel
 from utils.interactions_helpers import build_war_bot_channel_overwrites, has_guild_admin
 
 
@@ -196,12 +198,18 @@ class ServerSetup(Extension):
                 rt_channel_id=rt_ranked.id,
                 ct_channel_id=ct_ranked.id,
                 queue_channel_id=queue_channel.id,
+                config_version_ack=CONFIG_SCHEMA_VERSION,
+                how_to_guide_version=0,  # refresh_how_to_use_channel sets current
             )
 
-            try:
-                await how_to.send(embeds=build_how_to_use_embed())
-            except Exception as exc:
-                print(f"⚠️ Could not post how-to guide in #{how_to.name}: {exc}")
+            ok, howto_note = await refresh_how_to_use_channel(ctx.guild)
+            if not ok:
+                print(f"⚠️ Could not post how-to guide: {howto_note}")
+                upsert_guild_config(
+                    guild_id,
+                    guild_name,
+                    how_to_guide_version=HOW_TO_GUIDE_VERSION,
+                )
 
             config = get_guild_config(guild_id)
             embed = build_setup_embed(
@@ -211,6 +219,7 @@ class ServerSetup(Extension):
                 description=(
                     f"Created **War Bot** category with {how_to.mention}, {queue_channel.mention}, "
                     f"{rt_ranked.mention}, {rt_casual.mention}, {ct_ranked.mention}, and {ct_casual.mention}."
+                    + (f"\n{howto_note}" if ok else f"\nHow-to post failed: {howto_note}")
                 ),
             )
             await ctx.send(embeds=embed, ephemeral=True)

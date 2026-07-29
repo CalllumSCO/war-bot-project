@@ -13,36 +13,44 @@ from interactions import (
 )
 
 from classes.player import Player
-from utils.ally_request_store import (
+from domain.match import (
     create_ally_request,
     delete_ally_request,
     get_ally_request,
     pending_ally_for_war_and_user,
+    start_match_request,
     upsert_ally_request,
+    upsert_match_request,
+)
+from domain.queue import delete_party, get_party, remove_player_from_party, sync_party_lineup_from_post, upsert_party
+from domain.roster import (
+    SEARCH_ALLIES,
+    SEARCH_OPPONENTS,
+    ally_request_role_policy,
+    can_seek_opponents,
+    is_roster_full,
+    reconcile_search_mode,
+    role_allowed_for_lineup,
 )
 from utils.billboard_store import delete_war, find_war_across_boards, find_war_by_author, upsert_war
 from utils.billboard_refresh import refresh_war_billboard_posts
 from utils.colors import COLORS
+from utils.discord_defer import defer_ephemeral
 from utils.embeds import build_match_request_embed, build_war_embed
 from utils.guild_config import get_queue_channel_id
 from utils.lineup_lock import find_blocking_lineup, lineup_lock_message
-from utils.player_links import require_linked_fc
-from utils.match_posting import sync_party_lineup_from_post
-from utils.match_request_store import upsert_request
-from utils.match_service import start_match_request
-from utils.queue_lobby import refresh_queue_lobby_message
-from utils.queue_store import get_party, upsert_party
-from utils.roster import (
-    SEARCH_ALLIES,
-    SEARCH_OPPONENTS,
-    ally_slots_remaining,
-    can_seek_opponents,
-    is_roster_full,
-    reconcile_search_mode,
+from utils.modal_labels import (
+    build_label_modal,
+    label_string_select,
+    patch_modal_context,
+    select_option,
 )
+from utils.player_links import require_linked_fc
+from utils.queue_lobby import refresh_queue_lobby_message
 from utils.search_time import format_search_time, opponent_search_unlocked
 from utils.war_buttons import build_war_buttons
 
+patch_modal_context()
 
 def _player_in_lineup(lineup: list, discord_id: int) -> bool:
     return any(entry.get("discord_id") == discord_id for entry in lineup)
@@ -147,70 +155,9 @@ class WarInteractions(Extension):
             return
 
         board, war = found
-        if war.get("status") != "open" or war.get("search_mode") != SEARCH_ALLIES:
-            await ctx.send("This war is not accepting allies right now.", ephemeral=True)
-            return
-
-        if is_roster_full(war.get("lineup", [])):
-            await ctx.send("This roster is already full (5/5).", ephemeral=True)
-            return
-
-        if not await require_linked_fc(ctx):
-            return
-
-        if _player_in_lineup(war.get("lineup", []), ctx.author.id):
-            await ctx.send("You are already on this roster.", ephemeral=True)
-            return
-
-        block = find_blocking_lineup(ctx.author.id, exclude_war_id=war_id)
-        if block:
-            await ctx.send(lineup_lock_message(block), ephemeral=True)
-            return
-
-        if self._is_author(war, ctx.author.id):
-            await ctx.send("You cannot join your own war as an ally.", ephemeral=True)
-            return
-
-        rows = [
-            ActionRow(
-                Button(
-                    style=ButtonStyle.PRIMARY,
-                    label="Request as Runner",
-                    custom_id=f"war_ally_runner:{war_id}",
-                ),
-                Button(
-                    style=ButtonStyle.SUCCESS,
-                    label="Request as Bagger",
-                    custom_id=f"war_ally_bagger:{war_id}",
-                ),
-            )
-        ]
-        await ctx.send(
-            f"Choose your role to **request** joining **{war.get('team_name')}** "
-            f"({ally_slots_remaining(war.get('lineup', []))} slot(s) left).",
-            components=rows,
-            ephemeral=True,
-        )
-
-    @component_callback(re.compile(r"^war_ally_(runner|bagger):(.+)$"))
-    async def join_ally_confirm(self, ctx: ComponentContext):
-        match = re.match(r"^war_ally_(runner|bagger):(.+)$", ctx.custom_id)
-        role_key = match.group(1)
-        war_id = match.group(2)
-
-        found = self._get_war(war_id)
-        if not found:
-            await ctx.send("This war post no longer exists.", ephemeral=True)
-            return
-
-        board, war = found
         lineup = war.get("lineup", [])
-
         if war.get("status") != "open" or war.get("search_mode") != SEARCH_ALLIES:
             await ctx.send("This war is not accepting allies right now.", ephemeral=True)
-            return
-
-        if not await require_linked_fc(ctx):
             return
 
         if is_roster_full(lineup):
@@ -221,21 +168,100 @@ class WarInteractions(Extension):
             await ctx.send("You are already on this roster.", ephemeral=True)
             return
 
-        if self._is_author(war, ctx.author.id):
-            await ctx.send("You cannot join your own war as an ally.", ephemeral=True)
-            return
-
         block = find_blocking_lineup(ctx.author.id, exclude_war_id=war_id)
         if block:
             await ctx.send(lineup_lock_message(block), ephemeral=True)
+            return
+
+        if self._is_author(war, ctx.author.id):
+            await ctx.send("You cannot join your own war as an ally.", ephemeral=True)
             return
 
         if pending_ally_for_war_and_user(war_id, ctx.author.id):
             await ctx.send("You already have a pending ally request for this war.", ephemeral=True)
             return
 
-        is_bagger = role_key == "bagger"
-        role_name = "Bagger" if is_bagger else "Runner"
+        policy = ally_request_role_policy(lineup)
+        if policy in ("bagger", "runner"):
+            await defer_ephemeral(ctx)
+            if not await require_linked_fc(ctx):
+                return
+            await self._submit_ally_request(
+                ctx, board, war, bagger=(policy == "bagger"), already_deferred=True
+            )
+            return
+
+        # No bagger yet and not 4 runners — requester chooses in a modal.
+        # Modal must be the first response, so FC check happens before it (fast path).
+        if not await require_linked_fc(ctx):
+            return
+
+        modal_payload, modal_handle = build_label_modal(
+            title="Request ally role",
+            labels=[
+                label_string_select(
+                    label="Role",
+                    custom_id="role",
+                    placeholder="Runner or bagger?",
+                    options=[
+                        select_option("Runner", "runner"),
+                        select_option("Bagger", "bagger"),
+                    ],
+                ),
+            ],
+            custom_id=f"war_ally_role:{war_id}",
+        )
+        await ctx.send_modal(modal_payload)
+        m_ctx = await self.bot.wait_for_modal(modal_handle, ctx.author)
+        role_raw = (m_ctx.kwargs.get("role") or "runner").strip().lower()
+        is_bagger = role_raw in ("bagger", "yes", "b", "1")
+        await self._submit_ally_request(m_ctx, board, war, bagger=is_bagger)
+
+    async def _submit_ally_request(
+        self,
+        ctx,
+        board: str,
+        war: Dict[str, Any],
+        *,
+        bagger: bool,
+        already_deferred: bool = False,
+    ) -> None:
+        if not already_deferred:
+            await defer_ephemeral(ctx)
+
+        war_id = war.get("war_id")
+        # Re-check state in case the roster changed while choosing.
+        found = self._get_war(war_id)
+        if not found:
+            await ctx.send("This war post no longer exists.", ephemeral=True)
+            return
+        board, war = found
+        lineup = war.get("lineup", [])
+
+        if war.get("status") != "open" or war.get("search_mode") != SEARCH_ALLIES:
+            await ctx.send("This war is not accepting allies right now.", ephemeral=True)
+            return
+        if is_roster_full(lineup):
+            await ctx.send("This roster is already full (5/5).", ephemeral=True)
+            return
+        if _player_in_lineup(lineup, ctx.author.id):
+            await ctx.send("You are already on this roster.", ephemeral=True)
+            return
+        if pending_ally_for_war_and_user(war_id, ctx.author.id):
+            await ctx.send("You already have a pending ally request for this war.", ephemeral=True)
+            return
+        if not role_allowed_for_lineup(lineup, bagger=bagger):
+            policy = ally_request_role_policy(lineup)
+            if policy == "bagger":
+                msg = "This roster only has a **bagger** slot left (4 runners already)."
+            elif policy == "runner":
+                msg = "This roster already has a bagger — ally requests are **runner** only."
+            else:
+                msg = "That role isn't available for this roster right now."
+            await ctx.send(msg, ephemeral=True)
+            return
+
+        role_name = "Bagger" if bagger else "Runner"
         request = create_ally_request(
             board,
             war_id,
@@ -254,9 +280,7 @@ class WarInteractions(Extension):
             return
 
         roster_mentions = " ".join(
-            f"<@{p['discord_id']}>"
-            for p in lineup
-            if p.get("discord_id")
+            f"<@{p['discord_id']}>" for p in lineup if p.get("discord_id")
         )
         try:
             channel = await self.bot.fetch_channel(queue_channel_id)
@@ -281,8 +305,24 @@ class WarInteractions(Extension):
             ephemeral=True,
         )
 
+    @component_callback(re.compile(r"^war_ally_(runner|bagger):(.+)$"))
+    async def join_ally_confirm_legacy(self, ctx: ComponentContext):
+        """Legacy buttons from older prompts — still honor role policy."""
+        match = re.match(r"^war_ally_(runner|bagger):(.+)$", ctx.custom_id)
+        role_key = match.group(1)
+        war_id = match.group(2)
+        found = self._get_war(war_id)
+        if not found:
+            await ctx.send("This war post no longer exists.", ephemeral=True)
+            return
+        board, war = found
+        if not await require_linked_fc(ctx):
+            return
+        await self._submit_ally_request(ctx, board, war, bagger=(role_key == "bagger"))
+
     @component_callback(re.compile(r"^ally_accept:(.+)$"))
     async def ally_accept(self, ctx: ComponentContext):
+        await defer_ephemeral(ctx)
         request_id = ctx.custom_id.split(":", 1)[1]
         request = get_ally_request(request_id)
         if not request or request.get("status") != "pending":
@@ -318,7 +358,12 @@ class WarInteractions(Extension):
             await ctx.send("That player is already on the roster.", ephemeral=True)
             return
 
-        block = find_blocking_lineup(requester_id, exclude_war_id=war["war_id"])
+        requester_party_id = request.get("requester_party_id")
+        block = find_blocking_lineup(
+            requester_id,
+            exclude_war_id=war["war_id"],
+            exclude_party_id=requester_party_id,
+        )
         if block:
             await ctx.send(
                 f"Cannot accept — {lineup_lock_message(block)}",
@@ -327,7 +372,24 @@ class WarInteractions(Extension):
             return
 
         role_name = request.get("role", "Runner")
-        is_bagger = role_name == "Bagger"
+        is_bagger = role_name == "Bagger" or str(role_name).lower() == "bagger"
+        if not role_allowed_for_lineup(lineup, bagger=is_bagger):
+            policy = ally_request_role_policy(lineup)
+            if policy == "bagger":
+                msg = "This roster only has a bagger slot left — can't accept a runner."
+            elif policy == "runner":
+                msg = "This roster already has a bagger — can't accept another bagger."
+            else:
+                msg = "That role isn't available for this roster right now."
+            delete_ally_request(request_id)
+            await ctx.send(msg, ephemeral=True)
+            return
+        role_name = "Bagger" if is_bagger else "Runner"
+
+        from domain.queue import remove_player_from_party
+
+        remove_player_from_party(int(requester_id), party_id=requester_party_id)
+
         lineup.append(
             Player(
                 player=request.get("requester_name") or str(requester_id),
@@ -350,6 +412,15 @@ class WarInteractions(Extension):
         upsert_ally_request(request)
         delete_ally_request(request_id)
 
+        from utils.pending_outbound import (
+            clear_outbound_pending_for_party,
+            clear_outbound_pending_for_user,
+        )
+
+        clear_outbound_pending_for_user(int(requester_id))
+        if war.get("party_id"):
+            clear_outbound_pending_for_party(str(war.get("party_id")))
+
         try:
             await ctx.message.edit(
                 content=f"Accepted <@{requester_id}> as **{role_name}** ally.",
@@ -362,21 +433,35 @@ class WarInteractions(Extension):
         await self._refresh_war_on_billboards(board, war)
         await self._refresh_team_lobby_for_war(war)
 
+        invite_note = None
         try:
-            user = await self.bot.fetch_user(requester_id)
-            await user.send(
-                f"Your ally request for **{war.get('team_name')}** as **{role_name}** was **accepted**."
-            )
-        except Exception:
-            pass
+            from utils.ally_server_invite import maybe_auto_invite_ally
 
+            invite_note = await maybe_auto_invite_ally(
+                self.bot, war, int(requester_id), role_label=role_name
+            )
+        except Exception as exc:
+            print(f"⚠️ auto-invite ally failed: {exc}")
+
+        if not invite_note:
+            # Fallback accept DM when auto-invite is off / skipped.
+            try:
+                user = await self.bot.fetch_user(requester_id)
+                await user.send(
+                    f"Your ally request for **{war.get('team_name')}** as **{role_name}** was **accepted**."
+                )
+            except Exception:
+                pass
+
+        extra = f"\n{invite_note}" if invite_note else ""
         await ctx.send(
-            f"Accepted <@{requester_id}> as **{role_name}**.",
+            f"Accepted <@{requester_id}> as **{role_name}**.{extra}",
             ephemeral=True,
         )
 
     @component_callback(re.compile(r"^ally_deny:(.+)$"))
     async def ally_deny(self, ctx: ComponentContext):
+        await defer_ephemeral(ctx)
         request_id = ctx.custom_id.split(":", 1)[1]
         request = get_ally_request(request_id)
         if not request or request.get("status") != "pending":
@@ -418,6 +503,7 @@ class WarInteractions(Extension):
 
     @component_callback(re.compile(r"^war_seek_opponents:(.+)$"))
     async def seek_opponents(self, ctx: ComponentContext):
+        await defer_ephemeral(ctx)
         war_id = ctx.custom_id.split(":", 1)[1]
         found = self._get_war(war_id)
         if not found:
@@ -453,6 +539,7 @@ class WarInteractions(Extension):
 
     @component_callback(re.compile(r"^war_seek_allies:(.+)$"))
     async def seek_allies(self, ctx: ComponentContext):
+        await defer_ephemeral(ctx)
         war_id = ctx.custom_id.split(":", 1)[1]
         found = self._get_war(war_id)
         if not found:
@@ -471,6 +558,7 @@ class WarInteractions(Extension):
 
     @component_callback(re.compile(r"^war_request:(.+)$"))
     async def request_match(self, ctx: ComponentContext):
+        await defer_ephemeral(ctx)
         war_id = ctx.custom_id.split(":", 1)[1]
         found = self._get_war(war_id)
         if not found:
@@ -543,7 +631,7 @@ class WarInteractions(Extension):
         )
         request["notification_channel_id"] = channel.id
         request["notification_message_id"] = msg.id
-        upsert_request(request)
+        upsert_match_request(request)
 
         await ctx.send(
             f"Match request sent to **{target_war.get('team_name')}**. Waiting for their captain to accept.",
@@ -552,6 +640,7 @@ class WarInteractions(Extension):
 
     @component_callback(re.compile(r"^war_cancel:(.+)$"))
     async def cancel_war(self, ctx: ComponentContext):
+        await defer_ephemeral(ctx)
         war_id = ctx.custom_id.split(":", 1)[1]
         found = self._get_war(war_id)
         if not found:
@@ -580,7 +669,6 @@ class WarInteractions(Extension):
         delete_war(board, war_id)
         party_id = war.get("party_id")
         if party_id:
-            from utils.queue_store import delete_party
             delete_party(party_id)
 
         try:
@@ -592,6 +680,7 @@ class WarInteractions(Extension):
 
     @component_callback(re.compile(r"^war_delete:(.+)$"))
     async def delete_war_post(self, ctx: ComponentContext):
+        await defer_ephemeral(ctx)
         war_id = ctx.custom_id.split(":", 1)[1]
         found = self._get_war(war_id)
         if not found:
@@ -617,7 +706,6 @@ class WarInteractions(Extension):
         delete_war(board, war_id)
         party_id = war.get("party_id")
         if party_id:
-            from utils.queue_store import delete_party
             delete_party(party_id)
 
         try:

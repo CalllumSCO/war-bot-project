@@ -53,10 +53,6 @@ def average_team_mmr(lineup: List[Dict[str, Any]], war_type: str = "RT") -> int:
     return round(total / len(roster))
 
 
-def format_average_rank(lineup: List[Dict[str, Any]], war_type: str = "RT") -> str:
-    return f"`{average_team_mmr(lineup, war_type):,}` MMR (team avg)"
-
-
 def _margin_multiplier(point_margin: int) -> float:
     margin = max(1, int(point_margin))
     return min(1.5, 1.0 + (margin / 100.0))
@@ -82,9 +78,21 @@ def apply_ranked_war_mmr(
     war_type: str = "RT",
 ) -> Tuple[int, Dict[str, int]]:
     """
-    Apply MMR to every player on both lineups (including allies).
-    Team average / expected score still uses core roster only (no allies).
+    Apply SR (TrueSkill) to every player on both lineups (including allies).
+    Falls back to legacy Elo-style delta if TrueSkill path fails.
     """
+    try:
+        from utils.sr import apply_ranked_war_sr
+
+        win_d, lose_d = apply_ranked_war_sr(
+            winner_lineup, loser_lineup, point_margin, war_type=war_type
+        )
+        per_player = {**win_d, **lose_d}
+        team_delta = max(abs(v) for v in win_d.values()) if win_d else 1
+        return team_delta, per_player
+    except Exception:
+        pass
+
     team_delta = calculate_team_mmr_delta(
         winner_lineup, loser_lineup, point_margin, war_type=war_type
     )
@@ -115,3 +123,7 @@ def apply_ranked_war_mmr(
         per_player[str(discord_id)] = -team_delta
 
     return team_delta, per_player
+
+
+def format_average_rank(lineup: List[Dict[str, Any]], war_type: str = "RT") -> str:
+    return f"`{average_team_mmr(lineup, war_type):,}` SR (team avg)"

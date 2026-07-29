@@ -1,11 +1,11 @@
 import interactions
 from interactions import Extension, SlashContext, slash_command
 
+from domain.queue import get_active_party_for_user
 from utils.billboard_store import find_post_by_party_id, load_wars
 from utils.boards import ALL_BOARD_KEYS
 from utils.config import SCOPES
 from utils.embeds import build_queue_status_embed, build_war_view_embed
-from utils.queue_store import get_active_party_for_user
 from utils.war_buttons import build_war_buttons
 
 

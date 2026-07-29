@@ -90,6 +90,21 @@ async def verify_cached_fcs_against_wiimmfi(
     return mismatches, verified_ids
 
 
+def _is_lounge_missing_player(exc: BaseException) -> bool:
+    """True when Lounge simply has no account for this Discord user (not a config failure)."""
+    msg = str(exc).lower()
+    return any(
+        needle in msg
+        for needle in (
+            "invalid discord user id",
+            "player not found",
+            "no player found",
+            "no results",
+            "unknown player",
+        )
+    )
+
+
 async def try_lounge_link(discord_id: int) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]], Optional[str]]:
     """
     Attempt automatic Lounge link by Discord ID.
@@ -97,10 +112,13 @@ async def try_lounge_link(discord_id: int) -> Tuple[Optional[Dict[str, Any]], Op
     Returns (profile, lounge_player, error_message).
     - profile: fully linked when an FC was available from wiimmfi.php
     - lounge_player: player.php identity when Lounge account exists but FC still needed
+    - error_message: soft advisory only — callers should still offer manual FC entry
+      (no Lounge account / API hiccup must not block linking)
     """
     lounge_player: Optional[Dict[str, Any]] = None
     wiimmfi_row: Optional[Dict[str, Any]] = None
     fc: Optional[str] = None
+    soft_error: Optional[str] = None
 
     player_result, wiimmfi_result = await asyncio.gather(
         lookup_lounge_player_by_discord(discord_id),
@@ -108,22 +126,24 @@ async def try_lounge_link(discord_id: int) -> Tuple[Optional[Dict[str, Any]], Op
         return_exceptions=True,
     )
 
-    if isinstance(player_result, LoungeAPIError):
-        return None, None, str(player_result)
     if isinstance(player_result, Exception):
-        return None, None, f"Lounge lookup failed: {player_result}"
-    lounge_player = player_result
+        if _is_lounge_missing_player(player_result):
+            lounge_player = None
+        else:
+            # Config/network issues: still allow manual FC; keep a soft note.
+            soft_error = str(player_result)
+            lounge_player = None
+    else:
+        lounge_player = player_result
 
-    if isinstance(wiimmfi_result, LoungeAPIError):
-        pass
-    elif isinstance(wiimmfi_result, Exception):
+    if isinstance(wiimmfi_result, Exception):
         pass
     elif wiimmfi_result:
         wiimmfi_row = wiimmfi_result[0]
         fc = _fc_from_row(wiimmfi_row)
 
     if not fc and not lounge_player:
-        return None, None, None
+        return None, None, soft_error
 
     lounge_name = None
     lounge_player_id = None
@@ -149,7 +169,7 @@ async def try_lounge_link(discord_id: int) -> Tuple[Optional[Dict[str, Any]], Op
         )
         return profile, lounge_player, None
 
-    return None, lounge_player, None
+    return None, lounge_player, soft_error
 
 
 async def link_manual_friend_code(
@@ -244,9 +264,19 @@ async def require_linked_fc(ctx, guild_id: int | None = None) -> bool:
     fc = await resolve_friend_code(ctx.author.id, guild_id=guild_id)
     if fc:
         return True
-    await ctx.send(
-        "Link your Wii friend code first with `/profile link` "
-        "(Lounge accounts are detected automatically).",
-        ephemeral=True,
+
+    message = (
+        "You need a linked Wii friend code before joining a queue.\n"
+        "Run **`/profile link`** — if you have Lounge linked to Discord it can auto-fill, "
+        "otherwise enter your WiimmFI FC in the modal.\n"
+        "Then tap **Join as Runner/Bagger** again."
     )
+    try:
+        await ctx.send(message, ephemeral=True)
+    except Exception:
+        # After defer(), some builds prefer a plain followup.
+        try:
+            await ctx.send(message)
+        except Exception as exc:
+            print(f"⚠️ require_linked_fc notify failed: {exc}")
     return False

@@ -99,12 +99,14 @@ def promote_due_opponent_searches() -> List[Tuple[str, Dict[str, Any]]]:
         ):
             continue
 
-        party["search_mode"] = SEARCH_OPPONENTS
-        upsert_party(party)
-
+        # Only promote parties that already have a Discord hub post.
         found = find_post_by_party_id(party.get("party_id"))
         if not found:
             continue
+
+        party["search_mode"] = SEARCH_OPPONENTS
+        upsert_party(party)
+
         board, war = found
         war["lineup"] = list(lineup)
         war["ally_count"] = sum(1 for player in lineup if player.get("ally"))

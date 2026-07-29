@@ -1,0 +1,87 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg: #0a1020;
+  --bg-elevated: #152038;
+  --bg-panel: #101a30;
+  --border: #2a3a5c;
+  --text: #eef3fb;
+  --text-muted: #8ea0c0;
+  --accent: #5b8cff;
+  --accent-hover: #4a7af0;
+  --success: #22c55e;
+  --danger: #ef4444;
+  --warning: #f5a524;
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+
+  /* RGB channel triples of the colors above, used by Tailwind so utilities like
+     bg-danger/10 can apply opacity to a CSS-variable-backed color. */
+  --bg-rgb: 10 16 32;
+  --bg-elevated-rgb: 21 32 56;
+  --bg-panel-rgb: 16 26 48;
+  --border-rgb: 42 58 92;
+  --text-rgb: 238 243 251;
+  --text-muted-rgb: 142 160 192;
+  --accent-rgb: 91 140 255;
+  --accent-hover-rgb: 74 122 240;
+  --success-rgb: 34 197 94;
+  --danger-rgb: 239 68 68;
+  --warning-rgb: 245 165 36;
+}
+
+* {
+  border-color: var(--border);
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  background-color: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+}
+
+::selection {
+  background-color: rgba(59, 130, 246, 0.35);
+}
+
+/* Slim, unobtrusive scrollbars for the queue columns */
+.scroll-thin {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+
+.scroll-thin::-webkit-scrollbar {
+  width: 8px;
+}
+
+.scroll-thin::-webkit-scrollbar-thumb {
+  background-color: var(--border);
+  border-radius: 9999px;
+}
+
+.scroll-thin::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+input[type="color"] {
+  -webkit-appearance: none;
+  appearance: none;
+  border: none;
+  padding: 0;
+  background: none;
+}
+
+input[type="color"]::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+
+input[type="color"]::-webkit-color-swatch {
+  border: 1px solid var(--border);
+  border-radius: 9999px;
+}

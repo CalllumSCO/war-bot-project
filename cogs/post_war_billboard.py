@@ -2,6 +2,7 @@ import interactions
 from dotenv import load_dotenv
 from interactions import Extension, Client, listen, Task, IntervalTrigger
 
+from domain.queue import get_party, promote_due_opponent_searches
 from utils.billboard_store import load_wars
 from utils.boards import ALL_BOARD_KEYS
 from utils.channel_access import can_access_guild, fetch_accessible_channel
@@ -177,9 +178,7 @@ class PostWarBillboard(Extension):
                 await self.sync_one(board, channel_id, channel, cache)
 
     async def _promote_scheduled_opponent_searches(self):
-        from utils.match_posting import promote_due_opponent_searches
         from utils.queue_lobby import refresh_queue_lobby_message
-        from utils.queue_store import get_party
 
         for board, war in promote_due_opponent_searches():
             try:

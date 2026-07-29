@@ -1,18 +1,16 @@
 import os
 from dotenv import load_dotenv
-from google.cloud import secretmanager
-from google.api_core.exceptions import NotFound, PermissionDenied
+
+load_dotenv(".env.local")
 
 import interactions  # interactions.py
 
 from utils.config import DEV, GUILD_IDS, PROJECT_ENV, SCOPES
-
-load_dotenv(".env.local")
-
-PROJECT_SECRET_ID = os.getenv("GOOGLE_CLOUD_PROJECT_SECRET_ID", "war-bot")
+from utils.secrets import PROJECT_SECRET_ID, get_secret
 
 print("Environment:", PROJECT_ENV)
 print("DEV MODE:", DEV)
+print("Secret project:", PROJECT_SECRET_ID)
 
 
 def _load_lounge_api_key() -> None:
@@ -28,48 +26,6 @@ def _load_lounge_api_key() -> None:
             return
     set_lounge_api_key(key)
     print("Lounge API key configured.")
-
-
-# ---------------------------
-# Secrets Helpers
-# ---------------------------
-def decode_and_normalise_secret(raw: bytes) -> str:
-    """
-    Try UTF-8 first, then UTF-16 (handles BOM), then 'latin-1'.
-    Strip BOM, nulls, and trailing whitespace/newlines.
-    """
-    try:
-        text = raw.decode("utf-8")
-    except UnicodeDecodeError:
-        try:
-            text = raw.decode("utf-16")
-        except UnicodeDecodeError:
-            text = raw.decode("latin-1")
-
-    text = text.replace("\ufeff", "").replace("\x00", "")
-    return text.strip()
-
-
-def get_secret(secret_id: str, version_id: str = "latest") -> str:
-    """Fetches a secret string from Google Secret Manager and normalises it."""
-    client = secretmanager.SecretManagerServiceClient()
-    name = f"projects/{PROJECT_SECRET_ID}/secrets/{secret_id}/versions/{version_id}"
-    try:
-        resp = client.access_secret_version(request={"name": name})
-        secret_text = decode_and_normalise_secret(resp.payload.data)
-
-        # sanity check: Discord bot tokens are three dot-separated parts.
-        if secret_id.startswith("discord_"):
-            if secret_text.count(".") != 2:
-                raise RuntimeError(
-                    f"Secret '{secret_id}' does not look like a Discord bot token "
-                    "(expected three dot-separated parts)."
-                )
-        return secret_text
-    except PermissionDenied:
-        raise RuntimeError(f"No access to secret '{secret_id}'. Check IAM permissions.")
-    except NotFound:
-        raise RuntimeError(f"Secret or version not found: {name}")
 
 
 # ---------------------------
@@ -165,7 +121,11 @@ async def on_startup():
 # ---------------------------
 if __name__ == "__main__":
     _load_lounge_api_key()
+    from utils.db import init_db
+
+    init_db()
     bot.load_extension("cogs.setup")
+    bot.load_extension("cogs.config")
     bot.load_extension("cogs.team")
     bot.load_extension("cogs.profile")
     bot.load_extension("cogs.queue")
@@ -176,6 +136,10 @@ if __name__ == "__main__":
     bot.load_extension("cogs.war_interactions")
     bot.load_extension("cogs.match_interactions")
     bot.load_extension("cogs.match_relay")
+    bot.load_extension("cogs.chat_bridge")
+    bot.load_extension("cogs.ally_request_bridge")
+    bot.load_extension("cogs.party_sync_bridge")
+    bot.load_extension("cogs.ally_join")
     bot.load_extension("cogs.submit_pen")
     bot.load_extension("cogs.post_war_billboard")
     bot.start()

@@ -1,3 +1,7 @@
+"""War results — Postgres `war_results` or temp/war-results.json."""
+
+from __future__ import annotations
+
 import json
 import os
 import uuid
@@ -5,6 +9,7 @@ from datetime import datetime
 from typing import Any, Dict, List
 
 from utils.config import DATA_DIR
+from utils.db import get_conn, use_json_stores
 
 WAR_RESULTS_PATH = os.path.join(DATA_DIR, "war-results.json")
 
@@ -26,18 +31,88 @@ def _save_all(data: Dict[str, Any]) -> None:
         json.dump(data, handle, indent=2, ensure_ascii=False)
 
 
+def _parse_payload(value: Any) -> Dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        return json.loads(value)
+    return {}
+
+
 def append_result(result: Dict[str, Any]) -> Dict[str, Any]:
-    data = _load_all()
     result.setdefault("result_id", str(uuid.uuid4()))
     result.setdefault("completed_at", datetime.utcnow().isoformat())
     result.setdefault("table_bot_synced", False)
-    data["results"].append(result)
-    _save_all(data)
+
+    if use_json_stores():
+        data = _load_all()
+        data["results"].append(result)
+        _save_all(data)
+        return result
+
+    completed_at = result.get("completed_at")
+    with get_conn() as conn:
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                """
+                INSERT INTO war_results (result_id, completed_at, payload)
+                VALUES (%s, %s::timestamptz, %s::jsonb)
+                ON CONFLICT (result_id) DO UPDATE SET
+                  completed_at = EXCLUDED.completed_at,
+                  payload = EXCLUDED.payload
+                """,
+                (
+                    result["result_id"],
+                    completed_at,
+                    json.dumps(result),
+                ),
+            )
+        finally:
+            cursor.close()
     return result
 
 
 def list_results() -> List[Dict[str, Any]]:
-    return _load_all()["results"]
+    if use_json_stores():
+        return _load_all()["results"]
+
+    with get_conn() as conn:
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                """
+                SELECT payload FROM war_results
+                ORDER BY completed_at ASC, id ASC
+                """
+            )
+            rows = cursor.fetchall()
+        finally:
+            cursor.close()
+    return [_parse_payload(row[0]) for row in rows]
+
+
+def get_result(result_id: str) -> Dict[str, Any] | None:
+    rid = str(result_id)
+    if use_json_stores():
+        for result in _load_all()["results"]:
+            if str(result.get("result_id")) == rid:
+                return result
+        return None
+
+    with get_conn() as conn:
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                "SELECT payload FROM war_results WHERE result_id = %s LIMIT 1",
+                (rid,),
+            )
+            row = cursor.fetchone()
+        finally:
+            cursor.close()
+    if not row:
+        return None
+    return _parse_payload(row[0])
 
 
 def list_results_for_player(discord_id: int, *, limit: int = 5) -> List[Dict[str, Any]]:
@@ -49,7 +124,7 @@ def list_results_for_player(discord_id: int, *, limit: int = 5) -> List[Dict[str
         found_player = None
         for side, key in (("winner", "winner_lineup"), ("loser", "loser_lineup")):
             for player in result.get(key) or []:
-                if player.get("discord_id") == target:
+                if int(player.get("discord_id") or 0) == target:
                     found_side = side
                     found_player = player
                     break

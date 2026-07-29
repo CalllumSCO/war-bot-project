@@ -3,13 +3,19 @@ import re
 import interactions
 from interactions import ComponentContext, Extension, component_callback
 
+from domain.match import (
+    delete_match_request,
+    finalize_match,
+    get_match_request,
+    upsert_match_request,
+)
+from domain.queue import get_party
 from utils.billboard_store import find_war
 from utils.billboard_refresh import refresh_war_billboard_posts
+from utils.discord_defer import defer_ephemeral
 from utils.guild_config import get_queue_channel_id
-from utils.match_request_store import delete_request, get_request, upsert_request
-from utils.match_service import create_war_comm_channels, finalize_match
+from utils.match_service import create_war_comm_channels
 from utils.queue_lobby import refresh_queue_lobby_message
-from utils.queue_store import get_party
 
 
 class MatchInteractions(Extension):
@@ -32,8 +38,9 @@ class MatchInteractions(Extension):
 
     @component_callback(re.compile(r"^match_accept:(.+)$"))
     async def match_accept(self, ctx: ComponentContext):
+        await defer_ephemeral(ctx)
         request_id = ctx.custom_id.split(":", 1)[1]
-        request = get_request(request_id)
+        request = get_match_request(request_id)
         if not request or request.get("status") != "pending":
             await ctx.send("This match request is no longer active.", ephemeral=True)
             return
@@ -43,7 +50,7 @@ class MatchInteractions(Extension):
         requester_war = find_war(board, request["requester_war_id"])
         if not target_war or not requester_war:
             await ctx.send("One of the war posts no longer exists.", ephemeral=True)
-            delete_request(request_id)
+            delete_match_request(request_id)
             return
 
         if ctx.author.id != target_war.get("author_discord_id"):
@@ -60,7 +67,7 @@ class MatchInteractions(Extension):
             return
 
         request["status"] = "accepted"
-        upsert_request(request)
+        upsert_match_request(request)
         await self._disable_notification(request, f"Accepted by {ctx.author.display_name}.")
 
         for war in (target_war, requester_war):
@@ -89,8 +96,9 @@ class MatchInteractions(Extension):
 
     @component_callback(re.compile(r"^match_deny:(.+)$"))
     async def match_deny(self, ctx: ComponentContext):
+        await defer_ephemeral(ctx)
         request_id = ctx.custom_id.split(":", 1)[1]
-        request = get_request(request_id)
+        request = get_match_request(request_id)
         if not request or request.get("status") != "pending":
             await ctx.send("This match request is no longer active.", ephemeral=True)
             return
@@ -100,7 +108,7 @@ class MatchInteractions(Extension):
         requester_war = find_war(board, request["requester_war_id"])
         if not target_war:
             await ctx.send("War post not found.", ephemeral=True)
-            delete_request(request_id)
+            delete_match_request(request_id)
             return
 
         if ctx.author.id != target_war.get("author_discord_id"):
@@ -108,8 +116,8 @@ class MatchInteractions(Extension):
             return
 
         request["status"] = "denied"
-        upsert_request(request)
-        delete_request(request_id)
+        upsert_match_request(request)
+        delete_match_request(request_id)
         await self._disable_notification(request, f"Declined by {ctx.author.display_name}.")
 
         if requester_war:

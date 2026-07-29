@@ -18,13 +18,15 @@ HELP_TOPICS = {
         "• `/queue start` — pick track, ranked/casual, and your role\n"
         "• Casual: choose when opponent search should start (right away or a later hour)\n"
         "• Teammates join from lobby buttons\n"
-        "• `/queue post` — post to the hub (needs a bagger)\n"
+        "• `/queue post` — post to the allies hub (bagger not required)\n"
         "• `/queue status` / `/queue cancel`\n\n"
         "**Casual tip:** fill allies anytime; looking for opponents only goes live at your chosen time.",
     ),
     "war": _embed(
         "Help · /war",
         "**Match channel** (`war-vs-*`)\n\n"
+        "• Blue embeds = match chat (both teams)\n"
+        "• Green embeds = team-only — prefix with `g:` or `.g `\n"
         "• `/war complete` — report result + RXX\n"
         "• Scores pull from the WiimmFI room when possible\n"
         "• `/war scores` — manual fallback if RXX lookup fails\n"
@@ -43,7 +45,9 @@ HELP_TOPICS = {
         "Help · Setup",
         "**Admin (once per server)**\n\n"
         "• `/team` — register this Discord as your team\n"
-        "• `/setup` — create or link hub boards + team queue",
+        "• `/setup` — create or link hub boards + team queue\n"
+        "• `/config` — preferences (e.g. Auto-invite allies, on by default)\n"
+        "• `/config action:Check for updates` — review new toggles / refresh `#how-to-use`",
     ),
 }
 

@@ -1,23 +1,28 @@
 import re
-from typing import Optional
 
 import interactions
 from interactions import ComponentContext, Extension, component_callback
 
 from classes.player import Player
+from domain.match import board_for_party
+from domain.queue import cancel_party, get_party, post_party_to_billboard, sync_billboard_post_from_party, upsert_party
+from domain.roster import PARTY_PREPARING, is_roster_full, team_queue_lobby_active
 from utils.billboard_refresh import refresh_war_billboard_posts
 from utils.lineup_lock import find_blocking_lineup, lineup_lock_message
 from utils.player_links import require_linked_fc
-from utils.match_posting import sync_billboard_post_from_party
-from utils.match_service import board_for_party
 from utils.queue_lobby import refresh_queue_lobby_message
-from utils.queue_service import cancel_party, post_party_to_billboard
-from utils.queue_store import get_party, upsert_party
-from utils.roster import PARTY_PREPARING, is_roster_full, team_queue_lobby_active
+from utils.roster import role_allowed_for_lineup
 
 
 def _player_in_lineup(lineup: list, discord_id: int) -> bool:
     return any(entry.get("discord_id") == discord_id for entry in lineup)
+
+
+async def _defer_ephemeral(ctx: ComponentContext) -> None:
+    """Ack within Discord's 3s window before slow Lounge / message edits."""
+    from utils.discord_defer import defer_ephemeral
+
+    await defer_ephemeral(ctx)
 
 
 class QueueInteractions(Extension):
@@ -42,9 +47,6 @@ class QueueInteractions(Extension):
             await ctx.send("Only members of **this team's server** can join the queue lobby.", ephemeral=True)
             return
 
-        if not await require_linked_fc(ctx, party.get("guild_id")):
-            return
-
         lineup = party.get("lineup", [])
         if is_roster_full(lineup):
             await ctx.send("This queue is already full (5/5).", ephemeral=True)
@@ -54,12 +56,27 @@ class QueueInteractions(Extension):
             await ctx.send("You are already in this queue.", ephemeral=True)
             return
 
+        is_bagger = role_key == "bagger"
+        if not role_allowed_for_lineup(lineup, bagger=is_bagger):
+            await ctx.send(
+                "That role isn't available for this lobby right now "
+                "(4 runners → bagger only; bagger already in → runner only).",
+                ephemeral=True,
+            )
+            return
+
         block = find_blocking_lineup(ctx.author.id, exclude_party_id=party_id)
         if block:
             await ctx.send(lineup_lock_message(block), ephemeral=True)
             return
 
-        is_bagger = role_key == "bagger"
+        # Lounge FC check + lobby edit can exceed 3s — defer first so the
+        # "please /profile link" ephemeral still lands if they're unlinked.
+        await _defer_ephemeral(ctx)
+
+        if not await require_linked_fc(ctx, party.get("guild_id")):
+            return
+
         role_name = "Bagger" if is_bagger else "Runner"
         lineup.append(
             Player(
@@ -72,6 +89,15 @@ class QueueInteractions(Extension):
         )
         party["lineup"] = lineup
         upsert_party(party)
+
+        from utils.pending_outbound import (
+            clear_outbound_pending_for_party,
+            clear_outbound_pending_for_user,
+        )
+
+        clear_outbound_pending_for_party(party_id)
+        clear_outbound_pending_for_user(int(ctx.author.id))
+
         if party.get("status") != PARTY_PREPARING:
             synced = sync_billboard_post_from_party(party)
             if synced:
@@ -98,6 +124,8 @@ class QueueInteractions(Extension):
             await ctx.send("You are not in this queue.", ephemeral=True)
             return
 
+        await _defer_ephemeral(ctx)
+
         party["lineup"] = lineup
         upsert_party(party)
         if party.get("status") != PARTY_PREPARING:
@@ -121,6 +149,8 @@ class QueueInteractions(Extension):
             await ctx.send("Only the captain can post.", ephemeral=True)
             return
 
+        await _defer_ephemeral(ctx)
+
         post, message = post_party_to_billboard(party)
         if not post:
             await ctx.send(message, ephemeral=True)
@@ -143,9 +173,12 @@ class QueueInteractions(Extension):
             await ctx.send("Only the captain can cancel the queue.", ephemeral=True)
             return
 
+        await _defer_ephemeral(ctx)
+
         cancel_party(party_id)
         try:
-            await ctx.message.delete()
+            if ctx.message:
+                await ctx.message.delete()
         except Exception:
             pass
         await ctx.send("Queue cancelled.", ephemeral=True)
