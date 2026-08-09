@@ -6,7 +6,10 @@ import {
   ApiError,
   getMatchMessages,
   getMatchSession,
+  requestMatchCancel,
+  respondMatchCancel,
   sendMatchMessage,
+  submitMatchResult,
   subscribeEvents,
   type ChatMessage,
   type ChatScope,
@@ -143,6 +146,13 @@ export default function MatchClient({ sessionId }: { sessionId: string }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>("match");
+  const [actionBusy, setActionBusy] = useState(false);
+  const [showSubmit, setShowSubmit] = useState(false);
+  const [margin, setMargin] = useState("");
+  const [rxx, setRxx] = useState("");
+  const [reporterWon, setReporterWon] = useState(true);
+  const [scores, setScores] = useState("");
+  const [actionNote, setActionNote] = useState<string | null>(null);
   const mountedRef = useRef(true);
 
   const fetchSession = useCallback(
@@ -177,6 +187,22 @@ export default function MatchClient({ sessionId }: { sessionId: string }) {
     };
   }, [fetchSession]);
 
+  const runAction = async (fn: () => Promise<unknown>, okNote?: string) => {
+    setActionBusy(true);
+    setActionNote(null);
+    try {
+      await fn();
+      if (okNote) setActionNote(okNote);
+      await fetchSession(false);
+    } catch (err) {
+      const detail =
+        err instanceof ApiError ? String(err.message || "").replace(/\*\*/g, "").trim() : "";
+      setActionNote(detail || "That action failed. Try again.");
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
   if (loading) {
     return (
       <main className="mx-auto max-w-4xl px-4 py-8">
@@ -203,6 +229,7 @@ export default function MatchClient({ sessionId }: { sessionId: string }) {
   }
 
   const opponentsVisible = session.opponentsReady && session.opponents.length > 0;
+  const cancel = session.cancelRequest;
 
   return (
     <main className="mx-auto max-w-4xl px-4 py-6">
@@ -214,6 +241,47 @@ export default function MatchClient({ sessionId }: { sessionId: string }) {
           {session.status}
         </span>
       </div>
+
+      {actionNote && (
+        <p className="mb-3 rounded-lg border border-border bg-elevated px-3 py-2 text-sm text-muted">
+          {actionNote}
+        </p>
+      )}
+
+      {cancel?.pending && (
+        <div className="mb-4 rounded-xl border border-danger/40 bg-danger/5 px-4 py-3 text-sm">
+          {cancel.youRequested ? (
+            <p className="text-danger">Cancel request sent — waiting for the other team.</p>
+          ) : (
+            <div className="flex flex-wrap items-center gap-2">
+              <p className="flex-1 text-danger">The other team requested to cancel (no result / draw).</p>
+              <button
+                type="button"
+                disabled={actionBusy || !session.isCaptain}
+                onClick={() =>
+                  runAction(
+                    () => respondMatchCancel(sessionId, true),
+                    "Match cancelled — no result recorded."
+                  )
+                }
+                className="rounded-lg border border-success/40 bg-success/10 px-3 py-1.5 text-xs font-semibold text-success disabled:opacity-50"
+              >
+                Accept cancel
+              </button>
+              <button
+                type="button"
+                disabled={actionBusy || !session.isCaptain}
+                onClick={() =>
+                  runAction(() => respondMatchCancel(sessionId, false), "Cancel declined.")
+                }
+                className="rounded-lg border border-border px-3 py-1.5 text-xs font-semibold text-fg disabled:opacity-50"
+              >
+                Decline
+              </button>
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="mb-4 flex gap-1 rounded-lg border border-border bg-elevated p-1 text-sm">
         <button
@@ -251,6 +319,102 @@ export default function MatchClient({ sessionId }: { sessionId: string }) {
           <div className="h-72">
             <ChatPanel sessionId={sessionId} scope="match" />
           </div>
+
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <button
+              type="button"
+              disabled={actionBusy || !session.isCaptain || Boolean(cancel?.pending)}
+              onClick={() =>
+                runAction(() => requestMatchCancel(sessionId), "Cancel request sent to the other team.")
+              }
+              className="flex-1 rounded-xl border border-danger bg-transparent px-3 py-2.5 text-sm font-semibold text-danger transition hover:bg-danger/10 disabled:opacity-50"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              disabled={actionBusy || !session.isCaptain || Boolean(cancel?.pending)}
+              onClick={() => setShowSubmit((v) => !v)}
+              className="flex-1 rounded-xl border border-accent/40 bg-[#9ec0ff] px-3 py-2.5 text-sm font-semibold text-[#0a1a3a] transition hover:bg-[#b3cdff] disabled:opacity-50"
+            >
+              Submit match
+            </button>
+          </div>
+
+          {showSubmit && (
+            <div className="space-y-3 rounded-xl border border-border bg-elevated p-4">
+              <p className="text-sm font-medium text-fg">Submit result</p>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setReporterWon(true)}
+                  className={`flex-1 rounded-lg border px-3 py-2 text-sm font-medium ${
+                    reporterWon
+                      ? "border-accent/50 bg-accent/15 text-accent"
+                      : "border-border text-muted"
+                  }`}
+                >
+                  We won
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setReporterWon(false)}
+                  className={`flex-1 rounded-lg border px-3 py-2 text-sm font-medium ${
+                    !reporterWon
+                      ? "border-accent/50 bg-accent/15 text-accent"
+                      : "border-border text-muted"
+                  }`}
+                >
+                  We lost
+                </button>
+              </div>
+              <label className="block text-xs text-muted">
+                Point margin
+                <input
+                  value={margin}
+                  onChange={(e) => setMargin(e.target.value)}
+                  placeholder="15"
+                  className="mt-1 w-full rounded-lg border border-border bg-bg px-3 py-2 text-sm text-fg"
+                />
+              </label>
+              <label className="block text-xs text-muted">
+                RXX room code
+                <input
+                  value={rxx}
+                  onChange={(e) => setRxx(e.target.value)}
+                  placeholder="r12345"
+                  className="mt-1 w-full rounded-lg border border-border bg-bg px-3 py-2 text-sm text-fg"
+                />
+              </label>
+              <label className="block text-xs text-muted">
+                Scores (optional fallback — space separated)
+                <input
+                  value={scores}
+                  onChange={(e) => setScores(e.target.value)}
+                  placeholder="79 81 100 91 4 -5"
+                  className="mt-1 w-full rounded-lg border border-border bg-bg px-3 py-2 text-sm text-fg"
+                />
+              </label>
+              <button
+                type="button"
+                disabled={actionBusy || !margin.trim() || !rxx.trim()}
+                onClick={() =>
+                  runAction(async () => {
+                    await submitMatchResult(sessionId, {
+                      margin: Number(margin),
+                      rxx: rxx.trim(),
+                      reporter_won: reporterWon,
+                      scores: scores.trim() || undefined,
+                    });
+                    setShowSubmit(false);
+                  }, "Result submitted — waiting for confirmation / opponent scores.")
+                }
+                className="w-full rounded-xl bg-accent px-3 py-2.5 text-sm font-semibold text-white hover:bg-accent-hover disabled:opacity-50"
+              >
+                Submit
+              </button>
+            </div>
+          )}
         </div>
       ) : (
         <div className="h-96">

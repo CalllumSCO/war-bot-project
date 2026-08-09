@@ -79,11 +79,27 @@ def _ratings_summary(discord_id: int) -> dict[str, Any]:
 
 
 @router.get("/me/profile")
-def get_my_profile(user: CurrentUser = Depends(get_current_user)) -> dict[str, Any]:
+async def get_my_profile(user: CurrentUser = Depends(get_current_user)) -> dict[str, Any]:
     base = get_profile(user.discord_id) or {}
     extended = get_extended_profile_fields(user.discord_id)
+    # One-shot backfill for players who linked FC before Lounge/MKC preload existed.
+    if base.get("friend_code") and (
+        not (extended.get("mkc_url") or "").strip()
+        or not (extended.get("lounge_url") or "").strip()
+    ):
+        from utils.player_links import preload_external_profile_links
+
+        try:
+            await preload_external_profile_links(
+                user.discord_id,
+                friend_code=base.get("friend_code"),
+                lounge_player_id=base.get("lounge_player_id"),
+            )
+        except Exception:
+            pass
+        extended = get_extended_profile_fields(user.discord_id)
     return {
-        "discord_id": user.discord_id,
+        "discord_id": str(user.discord_id),
         "username": extended.get("discord_username") or user.username,
         "display_name": extended.get("display_name") or user.display_name,
         "avatar": extended.get("discord_avatar_url") or user.avatar,
@@ -115,6 +131,12 @@ class ProfileUpdate(BaseModel):
     accent_color: str | None = None
 
 
+class FriendCodeLinkBody(BaseModel):
+    """Omit or leave empty to auto-link from Lounge; otherwise save a WiimmFI FC."""
+
+    friend_code: str | None = None
+
+
 @router.patch("/me/profile")
 def update_my_profile(
     body: ProfileUpdate,
@@ -132,6 +154,64 @@ def update_my_profile(
     return {"discord_id": user.discord_id, **updated}
 
 
+@router.post("/me/friend-code")
+async def link_my_friend_code(
+    body: FriendCodeLinkBody,
+    user: CurrentUser = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Link a Wii friend code (manual or Lounge auto-detect).
+
+    Auto-link is best-effort: if Lounge can't resolve an FC, return the current
+    profile with a soft hint (HTTP 200) so the client can fall back to manual
+    entry without treating it as an error.
+    """
+    from utils.lounge_api import LoungeAPIError, lookup_lounge_player_by_discord
+    from utils.player_links import link_manual_friend_code, try_lounge_link
+
+    raw = (body.friend_code or "").strip()
+    if not raw:
+        profile = None
+        lounge_player = None
+        try:
+            profile, lounge_player, _soft_error = await try_lounge_link(user.discord_id)
+        except Exception:
+            profile, lounge_player = None, None
+        if profile and profile.get("friend_code"):
+            return await get_my_profile(user)
+
+        current = await get_my_profile(user)
+        if lounge_player:
+            hint = (
+                "Lounge found your Discord account but has no FC — "
+                "enter your WiimmFI friend code below."
+            )
+        else:
+            hint = "Enter your WiimmFI friend code (XXXX-XXXX-XXXX) below."
+        return {
+            **current,
+            "auto_link": False,
+            "auto_link_hint": hint,
+        }
+
+    lounge_player = None
+    try:
+        lounge_player = await lookup_lounge_player_by_discord(user.discord_id)
+    except LoungeAPIError:
+        lounge_player = None
+    except Exception:
+        lounge_player = None
+
+    linked, error = await link_manual_friend_code(
+        user.discord_id,
+        raw,
+        lounge_player=lounge_player,
+    )
+    if error:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, error)
+    if not linked:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Could not save friend code.")
+    return await get_my_profile(user)
+
 @router.get("/users/{discord_id}")
 def get_public_profile(
     discord_id: int,
@@ -143,7 +223,7 @@ def get_public_profile(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Player not found.")
 
     return {
-        "discord_id": discord_id,
+        "discord_id": str(discord_id),
         "username": extended.get("discord_username"),
         "display_name": extended.get("display_name") or (base or {}).get("lounge_name") or str(discord_id),
         "avatar": extended.get("discord_avatar_url"),

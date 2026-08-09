@@ -153,9 +153,17 @@ export default function QueueStartScreen({
         </section>
 
         {error && (
-          <p className="rounded-lg border border-danger/30 bg-danger/10 px-3 py-2 text-sm text-danger">
-            {error}
-          </p>
+          <div className="rounded-lg border border-danger/30 bg-danger/10 px-3 py-2 text-center text-sm text-danger">
+            <p>{error}</p>
+            {/friend code/i.test(error) ? (
+              <Link
+                href="/me"
+                className="mt-1 inline-block font-medium underline underline-offset-2"
+              >
+                Open Profile to link FC
+              </Link>
+            ) : null}
+          </div>
         )}
 
         <div className="space-y-2.5">

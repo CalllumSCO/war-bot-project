@@ -40,6 +40,37 @@ async def abort_matched_war(
     war_b: Dict[str, Any],
 ) -> None:
     """Tear down a matched war with no result (both captains agreed to cancel)."""
+    session = get_session_by_war_id(war_a.get("war_id", "")) or get_session_by_war_id(
+        war_b.get("war_id", "")
+    )
+    channel_a = session.get("channel_a_id") if session else None
+    channel_b = session.get("channel_b_id") if session else None
+    parties = []
+    for war in (war_a, war_b):
+        party_id = war.get("party_id")
+        if party_id:
+            parties.append(get_party(party_id))
+
+    abort_matched_war_stores(board, war_a, war_b)
+
+    if bot is not None:
+        await _delete_channel(bot, channel_a)
+        await _delete_channel(bot, channel_b)
+        for war in (war_a, war_b):
+            war_id = war.get("war_id")
+            if war_id:
+                await remove_war_from_billboards(bot, board, war_id)
+        for party in parties:
+            if party:
+                await _delete_lobby_message(bot, party)
+
+
+def abort_matched_war_stores(
+    board: str,
+    war_a: Dict[str, Any],
+    war_b: Dict[str, Any],
+) -> None:
+    """Data-only cancel (no Discord channel deletes). Safe for web API."""
     for war in (war_a, war_b):
         pending = find_pending_for_war(war.get("war_id", ""))
         if pending:
@@ -49,24 +80,17 @@ async def abort_matched_war(
         war_b.get("war_id", "")
     )
     if session:
-        await _delete_channel(bot, session.get("channel_a_id"))
-        await _delete_channel(bot, session.get("channel_b_id"))
         delete_session(session["session_id"])
 
     for war in (war_a, war_b):
         war_id = war.get("war_id")
         if war_id:
             delete_war(board, war_id)
-            await remove_war_from_billboards(bot, board, war_id)
 
     for war in (war_a, war_b):
         party_id = war.get("party_id")
-        if not party_id:
-            continue
-        party = get_party(party_id)
-        if party:
-            await _delete_lobby_message(bot, party)
-        delete_party(party_id)
+        if party_id:
+            delete_party(party_id)
 
 
 def get_both_wars_from_id(war_id: str) -> Optional[tuple[str, Dict[str, Any], Dict[str, Any]]]:

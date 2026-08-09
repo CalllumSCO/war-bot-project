@@ -37,6 +37,8 @@ export default function EditProfilePage() {
     youtube_url: "",
     twitch_url: "",
   });
+  /** Fields that were already set when the page loaded — locked until Unlink. */
+  const [locked, setLocked] = useState<Partial<Record<LinkField["key"], boolean>>>({});
   const [accentColor, setAccentColor] = useState("#3b82f6");
 
   useEffect(() => {
@@ -47,14 +49,20 @@ export default function EditProfilePage() {
         if (!mounted) return;
         setProfile(me);
         setBio(me.bio ?? "");
-        setLinks({
+        const nextLinks = {
           mkc_url: me.mkc_url ?? "",
           lounge_url: me.lounge_url ?? "",
           x_url: me.x_url ?? "",
           bluesky_url: me.bluesky_url ?? "",
           youtube_url: me.youtube_url ?? "",
           twitch_url: me.twitch_url ?? "",
-        });
+        };
+        setLinks(nextLinks);
+        setLocked(
+          Object.fromEntries(
+            LINK_FIELDS.map((field) => [field.key, Boolean(nextLinks[field.key].trim())])
+          ) as Record<LinkField["key"], boolean>
+        );
         setAccentColor(me.accent_color ?? "#3b82f6");
       } catch (err) {
         if (!mounted) return;
@@ -72,6 +80,11 @@ export default function EditProfilePage() {
     };
   }, [router]);
 
+  const unlink = (key: LinkField["key"]) => {
+    setLinks((prev) => ({ ...prev, [key]: "" }));
+    setLocked((prev) => ({ ...prev, [key]: false }));
+  };
+
   const handleSave = async () => {
     setSaving(true);
     setError(null);
@@ -88,6 +101,14 @@ export default function EditProfilePage() {
         ...(profile?.supporter ? { accent_color: accentColor } : {}),
       });
       setProfile(updated);
+      setLocked(
+        Object.fromEntries(
+          LINK_FIELDS.map((field) => [
+            field.key,
+            Boolean((updated[field.key] ?? links[field.key] ?? "").toString().trim()),
+          ])
+        ) as Record<LinkField["key"], boolean>
+      );
       setSaved(true);
       setTimeout(() => router.push("/me"), 600);
     } catch {
@@ -144,22 +165,43 @@ export default function EditProfilePage() {
       <section className="mt-4 rounded-2xl border border-border bg-panel p-5 shadow-panel">
         <h2 className="text-sm font-semibold text-fg">Links</h2>
         <p className="mt-1 text-xs text-muted">
-          Optional — shown as icons on your public profile.
+          Optional — shown as icons on your public profile. Linked fields stay locked until you
+          unlink them.
         </p>
         <div className="mt-3 space-y-3">
-          {LINK_FIELDS.map((field) => (
-            <label key={field.key} className="block">
-              <span className="text-xs text-muted">{field.label}</span>
-              <input
-                value={links[field.key]}
-                onChange={(e) =>
-                  setLinks((prev) => ({ ...prev, [field.key]: e.target.value }))
-                }
-                placeholder={field.placeholder}
-                className="mt-1 w-full rounded-lg border border-border bg-elevated px-3 py-2 text-sm text-fg placeholder:text-muted focus:border-accent focus:outline-none"
-              />
-            </label>
-          ))}
+          {LINK_FIELDS.map((field) => {
+            const isLocked = Boolean(locked[field.key] && links[field.key].trim());
+            return (
+              <div key={field.key}>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs text-muted">{field.label}</span>
+                  {isLocked && (
+                    <button
+                      type="button"
+                      onClick={() => unlink(field.key)}
+                      className="text-xs font-medium text-danger transition hover:underline"
+                    >
+                      Unlink
+                    </button>
+                  )}
+                </div>
+                <input
+                  value={links[field.key]}
+                  onChange={(e) =>
+                    setLinks((prev) => ({ ...prev, [field.key]: e.target.value }))
+                  }
+                  placeholder={field.placeholder}
+                  readOnly={isLocked}
+                  disabled={isLocked}
+                  className={`mt-1 w-full rounded-lg border border-border px-3 py-2 text-sm placeholder:text-muted focus:border-accent focus:outline-none ${
+                    isLocked
+                      ? "cursor-not-allowed bg-bg text-muted"
+                      : "bg-elevated text-fg"
+                  }`}
+                />
+              </div>
+            );
+          })}
         </div>
       </section>
 

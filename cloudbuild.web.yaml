@@ -1,0 +1,18 @@
+# Build the companion Next.js image (context = web/).
+substitutions:
+  _IMAGE: us-east1-docker.pkg.dev/war-bot-476522/cloud-run-source-deploy/war-bot-web:latest
+  _NEXT_PUBLIC_API_BASE: https://war-bot-api-d7tgzmqeoa-ue.a.run.app
+
+steps:
+  - name: gcr.io/cloud-builders/docker
+    dir: web
+    args:
+      - build
+      - -t
+      - ${_IMAGE}
+      - --build-arg
+      - NEXT_PUBLIC_API_BASE=${_NEXT_PUBLIC_API_BASE}
+      - .
+
+images:
+  - ${_IMAGE}

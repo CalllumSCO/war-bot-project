@@ -2,14 +2,13 @@
 
 import { useMemo, useState } from "react";
 import type { MyGroup } from "@/lib/api";
+import { rankIconSrc, rankLabel } from "@/lib/ranks";
 import FillingSurfaceIcons from "./FillingSurfaceIcons";
 import PlayerRow from "./PlayerRow";
 
 interface GroupCardProps {
   group: MyGroup | null;
-  busyInviteIds: Set<string>;
   queueActionBusy: boolean;
-  onUndoInvite: (inviteId: string) => void;
   onJoinQueue: () => void;
   onLeaveQueue: () => void;
   onPostToAllies: () => void;
@@ -20,9 +19,7 @@ interface GroupCardProps {
 
 export default function GroupCard({
   group,
-  busyInviteIds,
   queueActionBusy,
-  onUndoInvite,
   onJoinQueue,
   onLeaveQueue,
   onPostToAllies,
@@ -54,6 +51,9 @@ export default function GroupCard({
     group?.members.find((m) => m.discordId === group.captainDiscordId)?.role ??
     group?.members[0]?.role;
 
+  const avgRankIcon = rankIconSrc(group?.teamAvgRank ?? "unranked");
+  const seekingOpponents = Boolean(group?.inQueue && group?.canSeekOpponents);
+
   return (
     <section className="flex max-h-[min(70vh,36rem)] flex-col rounded-2xl border border-border bg-panel/80 shadow-panel">
       <header className="flex items-center justify-between gap-2 px-4 pb-1 pt-4">
@@ -68,14 +68,30 @@ export default function GroupCard({
             {group?.inQueue && (
               <span className="text-accent">
                 {" "}
-                · {group.onBillboard ? "In queue · On allies board" : "In queue"}
+                ·{" "}
+                {seekingOpponents
+                  ? "Looking for opponents"
+                  : group.onBillboard
+                    ? "In queue · On allies board"
+                    : "In queue"}
               </span>
             )}
           </p>
         </div>
-        {group?.inQueue && (
-          <FillingSurfaceIcons surface={group.fillingSurface} className="shrink-0" />
-        )}
+        <div className="flex shrink-0 items-center gap-2">
+          {group?.inQueue && (
+            <FillingSurfaceIcons surface={group.fillingSurface} className="shrink-0" />
+          )}
+          {avgRankIcon && (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={avgRankIcon}
+              alt={rankLabel(group?.teamAvgRank)}
+              title={`Team avg · ${rankLabel(group?.teamAvgRank)}`}
+              className="h-9 w-9"
+            />
+          )}
+        </div>
       </header>
 
       {group?.isCaptain && !group.inQueue && (
@@ -128,37 +144,7 @@ export default function GroupCard({
           ))
         )}
 
-        {!!group?.pendingOutbound?.length && (
-          <div className="space-y-2 pt-2">
-            {group.pendingOutbound.map((pending) => (
-              <div
-                key={pending.id}
-                className="rounded-2xl border border-danger/60 bg-panel/60 p-2.5 shadow-panel"
-              >
-                <div className="mb-2 flex items-center justify-between gap-2 px-0.5">
-                  <p className="text-xs font-semibold uppercase tracking-wide text-danger">
-                    {pending.label}
-                  </p>
-                </div>
-                <div className="space-y-2">
-                  {pending.players.map((player) => (
-                    <PlayerRow key={player.discordId} player={player} showSr />
-                  ))}
-                </div>
-                <button
-                  type="button"
-                  onClick={() => onUndoInvite(pending.id)}
-                  disabled={busyInviteIds.has(pending.id)}
-                  className="mt-2.5 w-full rounded-xl border border-danger/40 px-3 py-2 text-sm font-semibold text-danger transition hover:bg-danger/10 disabled:opacity-50"
-                >
-                  Undo
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
-
-        {inviteUrl && (
+        {inviteUrl && !seekingOpponents && (
           <div className="pt-1">
             <p className="mb-1.5 px-0.5 text-xs font-semibold uppercase tracking-wide text-muted">
               Invite link
@@ -188,9 +174,7 @@ export default function GroupCard({
               <button
                 type="button"
                 onClick={group.inQueue ? onLeaveQueue : onJoinQueue}
-                disabled={
-                  queueActionBusy || (!group.isCaptain && !group.inQueue)
-                }
+                disabled={queueActionBusy || (!group.isCaptain && !group.inQueue)}
                 className={`flex-1 rounded-xl px-3 py-2.5 text-sm font-semibold transition disabled:opacity-50 ${
                   group.inQueue
                     ? "border border-border text-fg hover:bg-elevated"
@@ -212,7 +196,7 @@ export default function GroupCard({
                 Leave
               </button>
             </div>
-            {group.isCaptain && (
+            {group.isCaptain && !seekingOpponents && (
               <button
                 type="button"
                 onClick={onPostToAllies}

@@ -40,7 +40,11 @@ class ProfileCommands(Extension):
         scopes=SCOPES,
     )
     async def profile_link(self, ctx: SlashContext):
-        profile, lounge_player, lounge_error = await try_lounge_link(ctx.author.id)
+        # Auto-link is optional — any Lounge/API failure just falls through to manual FC.
+        try:
+            profile, lounge_player, lounge_error = await try_lounge_link(ctx.author.id)
+        except Exception:
+            profile, lounge_player, lounge_error = None, None, None
 
         if profile:
             name = profile.get("lounge_name")

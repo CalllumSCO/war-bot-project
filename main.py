@@ -116,10 +116,34 @@ async def on_startup():
         print("CT war channel not configured — set CT_WAR_ID in env.")
 
 
+def _start_cloud_run_health_server() -> None:
+    """Cloud Run requires a process listening on $PORT; Discord uses a separate gateway."""
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    port = int(os.getenv("PORT", "8080"))
+
+    class _HealthHandler(BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.end_headers()
+            self.wfile.write(b"ok")
+
+        def log_message(self, format, *args):  # noqa: A003
+            return
+
+    server = HTTPServer(("0.0.0.0", port), _HealthHandler)
+    thread = threading.Thread(target=server.serve_forever, name="cloud-run-health", daemon=True)
+    thread.start()
+    print(f"Cloud Run health server listening on :{port}")
+
+
 # ---------------------------
 # Run
 # ---------------------------
 if __name__ == "__main__":
+    _start_cloud_run_health_server()
     _load_lounge_api_key()
     from utils.db import init_db
 

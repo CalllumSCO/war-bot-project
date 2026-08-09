@@ -12,8 +12,33 @@ from utils.ally_request_store import (
 from utils.billboard_store import find_war, find_war_across_boards, find_war_by_author
 from utils.match_request_store import delete_request as delete_match_request
 from utils.match_request_store import list_pending_match_for_requester_war
+from utils.match_request_store import list_pending_match_for_target_war
 from utils.party_invite_store import delete_party_invite, list_outbound_invites
 from utils.queue_store import get_active_party_for_user, get_party
+
+
+def _team_avg_rank(lineup: List[Dict[str, Any]], war_type: str) -> str:
+    from utils.sr import get_player_rating, rank_for_sr
+
+    scores: List[int] = []
+    for entry in lineup or []:
+        did = entry.get("discord_id")
+        if did is None:
+            continue
+        try:
+            rating = get_player_rating(
+                int(did),
+                war_type,
+                bagger=bool(entry.get("bagger") or str(entry.get("role") or "").lower() == "bagger"),
+                role=entry.get("role"),
+            )
+            if rating.get("sr") is not None:
+                scores.append(int(rating["sr"]))
+        except Exception:
+            continue
+    if not scores:
+        return "unranked"
+    return rank_for_sr(int(round(sum(scores) / len(scores))), revealed=True)
 
 
 def _exclude_ids_for_party(party: Optional[Dict[str, Any]]) -> List[str]:
@@ -189,16 +214,76 @@ def build_outbound_pending(
             if not war:
                 continue
             tw = war.get("war_type") or war_type
+            anonymous = str(war.get("mode") or "").lower() == "ranked"
+            players = (
+                []
+                if anonymous
+                else [enrich_lineup_entry(p, tw) for p in war.get("lineup") or []]
+            )
             _add(
                 {
                     "id": req.get("request_id"),
-                    "kind": "requested",
-                    "label": "Requested",
-                    "players": [enrich_lineup_entry(p, tw) for p in war.get("lineup") or []],
+                    "kind": "challenged",
+                    "label": "Challenged",
+                    "players": players,
                     "exclude_ids": _exclude_ids_for_war(war),
                     "invite_target_discord_id": str(war.get("author_discord_id") or ""),
                     "war_id": str(war.get("war_id") or target_id),
+                    "mode": war.get("mode"),
+                    "anonymous": anonymous,
+                    "team_avg_rank": _team_avg_rank(war.get("lineup") or [], tw),
                 }
             )
 
+    return items
+
+
+def build_inbound_pending(
+    *,
+    party: Optional[Dict[str, Any]],
+    user_discord_id: int,
+    enrich_lineup_entry,
+) -> List[Dict[str, Any]]:
+    """Incoming party invites are separate; this adds inbound match challenges."""
+    items: List[Dict[str, Any]] = []
+    seen: Set[str] = set()
+    match_post_id = (party or {}).get("match_post_id")
+    if not match_post_id:
+        return items
+
+    war_type = (party or {}).get("war_type") or "RT"
+    for req in list_pending_match_for_target_war(str(match_post_id)):
+        rid = str(req.get("request_id") or "")
+        if not rid or rid in seen:
+            continue
+        requester_id = req.get("requester_war_id")
+        board = req.get("board")
+        war = find_war(board, requester_id) if board and requester_id else None
+        if not war:
+            found = find_war_across_boards(requester_id) if requester_id else None
+            war = found[1] if found else None
+        if not war:
+            continue
+        seen.add(rid)
+        tw = war.get("war_type") or war_type
+        anonymous = str(war.get("mode") or "").lower() == "ranked"
+        players = (
+            []
+            if anonymous
+            else [enrich_lineup_entry(p, tw) for p in war.get("lineup") or []]
+        )
+        items.append(
+            {
+                "id": rid,
+                "kind": "challenge",
+                "label": "Challenge",
+                "players": players,
+                "exclude_ids": _exclude_ids_for_war(war),
+                "invite_target_discord_id": str(war.get("author_discord_id") or ""),
+                "war_id": str(war.get("war_id") or requester_id),
+                "mode": war.get("mode"),
+                "anonymous": anonymous,
+                "team_avg_rank": _team_avg_rank(war.get("lineup") or [], tw),
+            }
+        )
     return items

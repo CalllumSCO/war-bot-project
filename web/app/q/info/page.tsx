@@ -176,7 +176,7 @@ export default function QueueInfoPage() {
                 <strong className="text-fg">Request Ally</strong> — ask to join a posted team.
               </li>
               <li>
-                <strong className="text-fg">Request Match</strong> — challenge a full team looking for
+                <strong className="text-fg">Challenge</strong> — challenge a full team looking for
                 opponents.
               </li>
             </ul>

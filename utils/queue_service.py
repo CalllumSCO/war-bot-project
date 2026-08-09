@@ -77,6 +77,17 @@ def join_party_queue(party: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], O
     if not found:
         party["match_post_id"] = None
     upsert_party(party)
+
+    from utils.event_bus import publish_event
+
+    publish_event(
+        "queue",
+        {
+            "action": "join_queue",
+            "party_id": party.get("party_id"),
+            "board": board_for_party(party),
+        },
+    )
     return party, "Joined the queue."
 
 
@@ -107,6 +118,7 @@ def leave_party_queue(
     party["search_mode"] = SEARCH_ALLIES
     upsert_party(party)
 
+    from utils.event_bus import publish_event
     from utils.party_sync import publish_party_sync
 
     publish_party_sync(
@@ -114,6 +126,14 @@ def leave_party_queue(
         party=party,
         board=removed[0] if removed else None,
         war_id=removed[1] if removed else None,
+    )
+    publish_event(
+        "queue",
+        {
+            "action": "leave_queue",
+            "party_id": party.get("party_id"),
+            "board": removed[0] if removed else board_for_party(party),
+        },
     )
     return True, "Left the queue.", removed
 

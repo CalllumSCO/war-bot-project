@@ -15,6 +15,130 @@ from utils.lounge_api import (
 from utils.player_profile_store import get_profile, has_linked_fc, upsert_profile
 from utils.wiimmfi import friend_code_key, normalize_friend_code
 
+LOUNGE_PROFILE_URL = (
+    "https://mkwlounge.gg/ladder/player.php?player_id={player_id}&ladder_id=19"
+)
+MKC_PROFILE_URL = "https://mkcentral.com/en-us/registry/players/profile?id={player_id}"
+
+
+def lounge_profile_url(lounge_player_id: Any) -> Optional[str]:
+    try:
+        pid = int(lounge_player_id)
+    except (TypeError, ValueError):
+        return None
+    if pid <= 0:
+        return None
+    return LOUNGE_PROFILE_URL.format(player_id=pid)
+
+
+def mkc_profile_url(mkc_player_id: Any) -> Optional[str]:
+    try:
+        pid = int(mkc_player_id)
+    except (TypeError, ValueError):
+        return None
+    if pid <= 0:
+        return None
+    return MKC_PROFILE_URL.format(player_id=pid)
+
+
+def _as_discord_id(value: Any) -> Optional[int]:
+    if value is None:
+        return None
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def _mkc_linked_discord_id(player: Dict[str, Any]) -> Optional[int]:
+    """Discord id registered on an MKC player row, if any."""
+    discord = player.get("discord")
+    if isinstance(discord, dict):
+        found = _as_discord_id(discord.get("discord_id") or discord.get("id"))
+        if found is not None:
+            return found
+    return _as_discord_id(
+        player.get("discord_id")
+        or player.get("discord_user_id")
+        or player.get("discordId")
+    )
+
+
+async def preload_external_profile_links(
+    discord_id: int,
+    *,
+    friend_code: Optional[str] = None,
+    lounge_player_id: Any = None,
+) -> None:
+    """
+    Best-effort: fill empty lounge_url / mkc_url when ownership matches.
+
+    Anti-alt: only attach Lounge/MKC profile URLs when the Discord account on
+    that external profile matches `discord_id`. Never overwrites existing URLs.
+    Never raises — failures are silent so FC linking always continues.
+
+    `lounge_player_id` is accepted for call-site compatibility but ignored;
+    Lounge URLs are only set via Discord-owned Lounge lookup.
+    """
+    _ = lounge_player_id
+    try:
+        await _preload_external_profile_links_inner(discord_id, friend_code=friend_code)
+    except Exception as exc:
+        print(f"⚠️ preload_external_profile_links failed for {discord_id}: {exc}")
+
+
+async def _preload_external_profile_links_inner(
+    discord_id: int,
+    *,
+    friend_code: Optional[str] = None,
+) -> None:
+    try:
+        from api.services.profile_fields import (
+            get_extended_profile_fields,
+            update_extended_profile_fields,
+        )
+    except Exception:
+        return
+
+    try:
+        extended = get_extended_profile_fields(discord_id)
+    except Exception:
+        return
+
+    updates: Dict[str, Any] = {}
+
+    need_lounge = not (extended.get("lounge_url") or "").strip()
+    if need_lounge:
+        lounge_player = None
+        try:
+            lounge_player = await lookup_lounge_player_by_discord(discord_id)
+        except Exception:
+            lounge_player = None
+        if lounge_player:
+            # player.php was queried by discord_id → ownership already matches
+            url = lounge_profile_url(lounge_player.get("player_id"))
+            if url:
+                updates["lounge_url"] = url
+
+    need_mkc = not (extended.get("mkc_url") or "").strip()
+    fc = normalize_friend_code(friend_code or "")
+    if need_mkc and fc:
+        try:
+            from utils.mkcentral import lookup_mkc_player_by_fc
+
+            mkc_player = await lookup_mkc_player_by_fc(fc)
+        except Exception:
+            mkc_player = None
+        if mkc_player and _mkc_linked_discord_id(mkc_player) == int(discord_id):
+            mkc_id = mkc_player.get("id") or mkc_player.get("player_id")
+            url = mkc_profile_url(mkc_id)
+            if url:
+                updates["mkc_url"] = url
+
+    if not updates:
+        return
+    update_extended_profile_fields(discord_id, **updates)
+
 
 def _fc_from_row(row: Dict[str, Any]) -> Optional[str]:
     for key in ("fc", "friend_code", "friendcode", "wiimmfi_fc"):
@@ -167,6 +291,14 @@ async def try_lounge_link(discord_id: int) -> Tuple[Optional[Dict[str, Any]], Op
                 or lounge_player
             ),
         )
+        try:
+            await preload_external_profile_links(
+                discord_id,
+                friend_code=fc,
+                lounge_player_id=lounge_player_id,
+            )
+        except Exception:
+            pass
         return profile, lounge_player, None
 
     return None, lounge_player, soft_error
@@ -187,11 +319,21 @@ async def link_manual_friend_code(
         "link_source": "lounge+manual" if lounge_player else "manual",
         "lounge_verified": bool(lounge_player),
     }
+    lounge_player_id = None
     if lounge_player:
         fields["lounge_name"] = lounge_player.get("player_name") or lounge_player.get("name")
-        fields["lounge_player_id"] = lounge_player.get("player_id")
+        lounge_player_id = lounge_player.get("player_id")
+        fields["lounge_player_id"] = lounge_player_id
 
     profile = upsert_profile(discord_id, **fields)
+    try:
+        await preload_external_profile_links(
+            discord_id,
+            friend_code=fc,
+            lounge_player_id=lounge_player_id or (profile or {}).get("lounge_player_id"),
+        )
+    except Exception:
+        pass
     return profile, None
 
 
@@ -214,14 +356,20 @@ async def resolve_friend_code(
                     lounge_player = await lookup_lounge_player_by_discord(discord_id)
                 except LoungeAPIError:
                     pass
+                lounge_player_id = (lounge_player or rows[0]).get("player_id")
                 upsert_profile(
                     discord_id,
                     friend_code=fc,
                     lounge_name=(lounge_player or rows[0]).get("player_name")
                     or rows[0].get("name"),
-                    lounge_player_id=(lounge_player or rows[0]).get("player_id"),
+                    lounge_player_id=lounge_player_id,
                     link_source="lounge",
                     lounge_verified=True,
+                )
+                await preload_external_profile_links(
+                    discord_id,
+                    friend_code=fc,
+                    lounge_player_id=lounge_player_id,
                 )
                 return fc
     except LoungeAPIError:
@@ -234,6 +382,7 @@ async def resolve_friend_code(
                 fc = normalize_friend_code(host_rows[0].get("fc", ""))
                 if fc:
                     upsert_profile(discord_id, friend_code=fc, link_source="hostfc")
+                    await preload_external_profile_links(discord_id, friend_code=fc)
                     return fc
         except LoungeAPIError:
             pass

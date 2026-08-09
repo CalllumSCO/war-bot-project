@@ -1,4 +1,4 @@
-"""MKCentral bagger seeding — optional FC → registry lookup + 5v5 allowlist."""
+"""MKCentral bagger seeding — FC lookup, 5v5 allowlist, bagger-clause filter."""
 
 from __future__ import annotations
 
@@ -25,9 +25,20 @@ DEFAULT_ALLOWLIST = {
 
 MKC_REGISTRY_API = "https://mkcentral.com/api/registry/players"
 MKC_PLACEMENTS_API = "https://mkcentral.com/api/tournaments/players/placements"
+MKC_SQUAD_API = "https://mkcentral.com/api/tournaments/{tournament_id}/squads/{registration_id}"
 _HTTP_HEADERS = {
     "User-Agent": "ScrimsHub/1.0 (+https://github.com; bagger-seed)",
     "Accept": "application/json",
+}
+
+# Cache squad payloads while seeding so we don't re-fetch the same registration.
+_squad_cache: Dict[Tuple[int, int], Optional[Dict[str, Any]]] = {}
+
+# Manual force-count: (mkc_player_id, tournament_id, registration_id).
+# Use when MKC clause data is wrong but we know the player bagged.
+FORCE_COUNT_BAGGER_PLACEMENTS: set[Tuple[int, int, int]] = {
+    # YoshiChris08 — GSC Season 11 / Not Apocalypse (bagged, teammates held clause)
+    (55896, 578, 78461),
 }
 
 
@@ -85,7 +96,7 @@ async def lookup_mkc_player_by_fc(friend_code: str) -> Optional[Dict[str, Any]]:
     if isinstance(data, list) and data:
         return data[0]
     if isinstance(data, dict):
-        for key in ("players", "results", "data"):
+        for key in ("player_list", "players", "results", "data"):
             rows = data.get(key)
             if isinstance(rows, list) and rows:
                 return rows[0]
@@ -138,17 +149,20 @@ def is_allowlisted_event(event_name: str) -> bool:
 
 def estimate_bagger_sr_from_placements(placements: List[Dict[str, Any]]) -> int:
     """
-    Map verified 5v5 finishes → seed SR around 1000.
-    placements: [{event_key|name, place, verified_5v5?}]
+    Map verified 5v5 bagger finishes → seed SR around 1000.
+    placements: [{event_key|name, place, verified_5v5?, is_bagger_clause?,
+                  squad_clause_count?}]
+    Counts allowlisted events where the player was claused, or the squad had
+    no bagger-clause players at all (unclaused bagging team).
     """
     if not placements:
         return 1000
     score = 1000.0
     for row in placements:
+        if not _placement_counts_for_bagger_seed(row):
+            continue
         event = str(row.get("event_key") or row.get("name") or "").lower()
         meta = resolve_event_meta(event)
-        if not meta and not row.get("verified_5v5"):
-            continue
         weight = float((meta or {}).get("weight", 1.0))
         raw_place = row.get("place")
         if raw_place is None:
@@ -173,8 +187,125 @@ def estimate_bagger_sr_from_placements(placements: List[Dict[str, Any]]) -> int:
     return int(max(800, min(1400, round(score))))
 
 
-def placements_from_mkc_payload(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """Normalize MKC /tournaments/players/placements/{id} into seed rows."""
+def fetch_squad_registration(
+    tournament_id: int,
+    registration_id: int,
+) -> Optional[Dict[str, Any]]:
+    """Fetch one tournament squad/registration (cached)."""
+    key = (int(tournament_id), int(registration_id))
+    if key in _squad_cache:
+        return _squad_cache[key]
+    url = MKC_SQUAD_API.format(
+        tournament_id=int(tournament_id),
+        registration_id=int(registration_id),
+    )
+    data = _http_get_json(url)
+    squad = data if isinstance(data, dict) else None
+    _squad_cache[key] = squad
+    return squad
+
+
+def lookup_squad_bagger_meta(
+    mkc_player_id: int,
+    tournament_id: Any,
+    registration_id: Any,
+) -> Tuple[Optional[bool], Optional[int]]:
+    """
+    Returns (is_bagger_clause for this player, squad_clause_count).
+    Either field may be None if the squad/player can't be resolved.
+    """
+    try:
+        tid = int(tournament_id)
+        rid = int(registration_id)
+        pid = int(mkc_player_id)
+    except (TypeError, ValueError):
+        return None, None
+    squad = fetch_squad_registration(tid, rid)
+    if not squad:
+        return None, None
+    clause_count = 0
+    me_clause: Optional[bool] = None
+    for player in squad.get("players") or []:
+        try:
+            player_id = int(player.get("player_id") or 0)
+        except (TypeError, ValueError):
+            continue
+        is_clause = bool(player.get("is_bagger_clause"))
+        if is_clause:
+            clause_count += 1
+        if player_id == pid:
+            me_clause = is_clause
+    if me_clause is None:
+        return None, clause_count
+    return me_clause, clause_count
+
+
+def lookup_is_bagger_clause(
+    mkc_player_id: int,
+    tournament_id: Any,
+    registration_id: Any,
+) -> Optional[bool]:
+    """True if this player registered on the bagger clause for that squad."""
+    me_clause, _count = lookup_squad_bagger_meta(
+        mkc_player_id, tournament_id, registration_id
+    )
+    return me_clause
+
+
+def _is_force_counted_placement(row: Dict[str, Any]) -> bool:
+    try:
+        key = (
+            int(row.get("mkc_player_id")),
+            int(row.get("tournament_id")),
+            int(row.get("registration_id")),
+        )
+    except (TypeError, ValueError):
+        return False
+    return key in FORCE_COUNT_BAGGER_PLACEMENTS
+
+
+def _placement_counts_for_bagger_seed(row: Dict[str, Any]) -> bool:
+    """
+    Allowlisted 5v5 event, and either:
+    - player was on bagger clause, or
+    - squad had zero bagger-clause players (not a 'bagging team' registration), or
+    - manual FORCE_COUNT_BAGGER_PLACEMENTS override.
+    Skip when the player is unclaused but teammates hold the clause (likely runner),
+    unless overridden.
+    """
+    event = str(row.get("event_key") or row.get("name") or "").lower()
+    meta = resolve_event_meta(event)
+    if not meta and not row.get("verified_5v5"):
+        return False
+
+    if _is_force_counted_placement(row):
+        return True
+
+    me_clause = row.get("is_bagger_clause")
+    if me_clause is True:
+        return True
+    if me_clause is not False:
+        return False
+
+    try:
+        squad_clauses = int(row.get("squad_clause_count"))
+    except (TypeError, ValueError):
+        return False
+    # Unclaused on a squad with no clauses at all → count.
+    return squad_clauses == 0
+
+
+def placements_from_mkc_payload(
+    payload: Dict[str, Any],
+    *,
+    mkc_player_id: Optional[int] = None,
+    resolve_bagger_role: bool = True,
+) -> List[Dict[str, Any]]:
+    """Normalize MKC /tournaments/players/placements/{id} into seed rows.
+
+    When mkc_player_id is set, each row is annotated with is_bagger_clause and
+    squad_clause_count from the squad registration.
+    """
     rows: List[Dict[str, Any]] = []
     for key in (
         "tournament_team_placements",
@@ -190,16 +321,47 @@ def placements_from_mkc_payload(payload: Dict[str, Any]) -> List[Dict[str, Any]]
             if place is None:
                 continue
             meta = resolve_event_meta(name)
+            tournament_id = entry.get("tournament_id")
+            registration_id = entry.get("registration_id")
+            bagger_clause: Optional[bool] = None
+            squad_clause_count: Optional[int] = None
+            if (
+                resolve_bagger_role
+                and mkc_player_id
+                and tournament_id is not None
+                and registration_id is not None
+            ):
+                bagger_clause, squad_clause_count = lookup_squad_bagger_meta(
+                    int(mkc_player_id),
+                    tournament_id,
+                    registration_id,
+                )
             rows.append(
                 {
                     "event_key": name.lower(),
                     "name": name,
                     "place": int(place),
-                    "tournament_id": entry.get("tournament_id"),
+                    "tournament_id": tournament_id,
+                    "registration_id": registration_id,
+                    "mkc_player_id": int(mkc_player_id) if mkc_player_id else None,
+                    "squad_name": entry.get("squad_name"),
                     "game": entry.get("game"),
                     "mode": entry.get("mode"),
                     "verified_5v5": bool(meta),
                     "weight": float((meta or {}).get("weight", 1.0)) if meta else 1.0,
+                    "is_bagger_clause": bagger_clause,
+                    "squad_clause_count": squad_clause_count,
+                    "force_counted": bool(
+                        mkc_player_id
+                        and tournament_id is not None
+                        and registration_id is not None
+                        and (
+                            int(mkc_player_id),
+                            int(tournament_id),
+                            int(registration_id),
+                        )
+                        in FORCE_COUNT_BAGGER_PLACEMENTS
+                    ),
                 }
             )
     return rows
@@ -209,7 +371,7 @@ def fetch_player_placements(mkc_player_id: int) -> List[Dict[str, Any]]:
     data = _http_get_json(f"{MKC_PLACEMENTS_API}/{int(mkc_player_id)}")
     if not isinstance(data, dict):
         return []
-    return placements_from_mkc_payload(data)
+    return placements_from_mkc_payload(data, mkc_player_id=int(mkc_player_id))
 
 
 async def fetch_player_placements_async(mkc_player_id: int) -> List[Dict[str, Any]]:
@@ -228,7 +390,8 @@ async def fetch_player_placements_async(mkc_player_id: int) -> List[Dict[str, An
         return []
     if not isinstance(data, dict):
         return []
-    return placements_from_mkc_payload(data)
+    # Role resolution still uses sync HTTP + cache (seed scripts are fine with this).
+    return placements_from_mkc_payload(data, mkc_player_id=int(mkc_player_id))
 
 
 def ensure_default_allowlist_rows() -> None:
@@ -279,12 +442,7 @@ def seed_bagger_from_mkc_placements(
     used = list(placements or [])
     if not used and mkc_player_id:
         used = fetch_player_placements(int(mkc_player_id))
-    verified = [
-        p
-        for p in used
-        if p.get("verified_5v5")
-        or resolve_event_meta(str(p.get("event_key") or p.get("name") or ""))
-    ]
+    verified = [p for p in used if _placement_counts_for_bagger_seed(p)]
     sr = estimate_bagger_sr_from_placements(verified)
     rating = seed_bagger_from_mkc(discord_id, track, estimated_sr=sr)
     return rating, sr, verified

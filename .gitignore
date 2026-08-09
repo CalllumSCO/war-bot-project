@@ -209,11 +209,21 @@ __marimo__/
 
 .env.local
 sa-key.json
-temp/billboard-data
-temp/queue-parties.json
-temp/teams.json
-temp/guild-config.json
-temp/lineups
-temp/player-profiles.json
-temp/ally-requests.json
-temp/match-requests.json
+
+# Local runtime / JSON stores (keep off GitHub)
+temp/
+!temp/.gitkeep
+
+# Ad-hoc scrape / dump scratch at repo root
+q.json
+t.json
+tour.html
+wcl.html
+wcl.json
+wcl1.json
+wcl2.json
+wcl*.json
+wcl*.html
+
+# Local UI / flow sketches (HTML mockups)
+assets/sketches/

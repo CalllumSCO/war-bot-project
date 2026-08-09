@@ -1,0 +1,10 @@
+# Build the companion API image (context = repo root).
+substitutions:
+  _IMAGE: us-east1-docker.pkg.dev/war-bot-476522/cloud-run-source-deploy/war-bot-api:latest
+
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args: ["build", "-f", "api/Dockerfile", "-t", "${_IMAGE}", "."]
+
+images:
+  - ${_IMAGE}

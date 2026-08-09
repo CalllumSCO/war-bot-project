@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from api.auth.deps import CurrentUser, get_current_user, require_linked_fc
 from api.services.profile_fields import get_extended_profile_fields
@@ -74,7 +74,18 @@ router = APIRouter(tags=["queue"])
 
 
 def _player_in_lineup(lineup: list[dict[str, Any]], discord_id: int) -> bool:
-    return any(entry.get("discord_id") == discord_id for entry in lineup)
+    return any(_ids_equal(entry.get("discord_id"), discord_id) for entry in lineup)
+
+
+def _ids_equal(left: Any, right: Any) -> bool:
+    try:
+        return int(left) == int(right)
+    except (TypeError, ValueError):
+        return left == right and left is not None
+
+
+def _is_captain(party: dict[str, Any], discord_id: int) -> bool:
+    return _ids_equal(party.get("captain_discord_id"), discord_id)
 
 
 def _enrich_lineup_entry(entry: dict[str, Any], war_type: str) -> dict[str, Any]:
@@ -83,6 +94,11 @@ def _enrich_lineup_entry(entry: dict[str, Any], war_type: str) -> dict[str, Any]
     discord_id = entry.get("discord_id")
     if discord_id is None:
         return out
+    # Always string — JS JSON.parse corrupts snowflake ints (>2^53).
+    try:
+        out["discord_id"] = str(int(discord_id))
+    except (TypeError, ValueError):
+        out["discord_id"] = str(discord_id)
     try:
         extended = get_extended_profile_fields(int(discord_id))
         if extended.get("discord_avatar_url"):
@@ -116,7 +132,88 @@ def _enrich_party(party: dict[str, Any] | None) -> dict[str, Any] | None:
     enriched["lineup"] = [_enrich_lineup_entry(p, war_type) for p in party.get("lineup", [])]
     enriched["filling_surface"] = filling_surface(party=party)
     enriched["lobby_mode"] = party.get("lobby_mode")
+    avg_sr = _lineup_avg_sr(party.get("lineup", []), war_type)
+    enriched["team_avg_sr"] = avg_sr
+    if avg_sr is not None:
+        from utils.sr import rank_for_sr
+
+        enriched["team_avg_rank"] = rank_for_sr(int(avg_sr), revealed=True)
+    else:
+        enriched["team_avg_rank"] = "unranked"
+    for key in ("captain_discord_id", "guild_id"):
+        if enriched.get(key) is not None:
+            try:
+                enriched[key] = str(int(enriched[key]))
+            except (TypeError, ValueError):
+                enriched[key] = str(enriched[key])
     return enriched
+
+
+def _enrich_inbound_invite(invite: dict[str, Any]) -> dict[str, Any]:
+    """Attach the inviting party's roster so the Invitations column shows names."""
+    out = dict(invite)
+    for key in ("from_discord_id", "target_discord_id"):
+        if out.get(key) is not None:
+            try:
+                out[key] = str(int(out[key]))
+            except (TypeError, ValueError):
+                out[key] = str(out[key])
+    party = get_party(str(invite.get("party_id") or ""))
+    war_type = (party or {}).get("war_type") or "RT"
+    lineup = list((party or {}).get("lineup") or [])
+    if not lineup:
+        from_id = invite.get("from_discord_id")
+        if from_id is not None:
+            lineup = [
+                {
+                    "discord_id": str(from_id),
+                    "player": str(from_id),
+                    "role": "Runner",
+                    "bagger": False,
+                }
+            ]
+    out["from_lineup"] = [_enrich_lineup_entry(entry, war_type) for entry in lineup]
+    return out
+
+
+def _redact_ranked_opponent(war: dict[str, Any], team_avg_sr: int | None) -> dict[str, Any]:
+    """Ranked matchmaking: hide identities — keep war id + team avg rank only."""
+    from utils.sr import rank_for_sr
+
+    out = dict(war)
+    out["lineup"] = []
+    out["team_name"] = None
+    out["author_discord_id"] = None
+    out["team_avg_sr"] = team_avg_sr
+    out["team_avg_rank"] = (
+        rank_for_sr(int(team_avg_sr), revealed=True) if team_avg_sr is not None else "unranked"
+    )
+    out["anonymous"] = True
+    return out
+
+
+def _redact_for_queue_spy(war: dict[str, Any]) -> dict[str, Any]:
+    """Supporter preview: keep ranks only — no names, avatars, or Discord ids."""
+    out = dict(war)
+    redacted = []
+    for i, entry in enumerate(war.get("lineup") or []):
+        redacted.append(
+            {
+                "discord_id": f"spy-{i}",
+                "player": "?",
+                "role": entry.get("role"),
+                "bagger": entry.get("bagger"),
+                "rank": entry.get("rank") or "unranked",
+                "sr": None,
+                "avatar": None,
+                "avatarUrl": None,
+                "name_color": None,
+            }
+        )
+    out["lineup"] = redacted
+    out["team_name"] = None
+    out["author_discord_id"] = None
+    return out
 
 
 def _enrich_war(war: dict[str, Any]) -> dict[str, Any]:
@@ -128,6 +225,12 @@ def _enrich_war(war: dict[str, Any]) -> dict[str, Any]:
     enriched["filling_surface"] = (
         filling_surface(party=party) if party else filling_surface(war=war)
     )
+    for key in ("author_discord_id", "origin_guild_id", "guild_id"):
+        if enriched.get(key) is not None:
+            try:
+                enriched[key] = str(int(enriched[key]))
+            except (TypeError, ValueError):
+                enriched[key] = str(enriched[key])
     return enriched
 
 
@@ -242,11 +345,16 @@ class PartyCreate(BaseModel):
 @router.get("/me/group")
 def get_my_group(user: CurrentUser = Depends(get_current_user)) -> dict[str, Any]:
     party = get_active_party_for_user(user.discord_id)
-    inbound = list_inbound_invites(user.discord_id)
+    inbound = [_enrich_inbound_invite(inv) for inv in list_inbound_invites(user.discord_id)]
     outbound = list_outbound_invites(party["party_id"]) if party else []
-    from utils.pending_outbound import build_outbound_pending
+    from utils.pending_outbound import build_inbound_pending, build_outbound_pending
 
     outbound_pending = build_outbound_pending(
+        party=party,
+        user_discord_id=user.discord_id,
+        enrich_lineup_entry=_enrich_lineup_entry,
+    )
+    inbound_pending = build_inbound_pending(
         party=party,
         user_discord_id=user.discord_id,
         enrich_lineup_entry=_enrich_lineup_entry,
@@ -256,6 +364,7 @@ def get_my_group(user: CurrentUser = Depends(get_current_user)) -> dict[str, Any
         "inbound_invites": inbound,
         "outbound_invites": outbound,
         "outbound_pending": outbound_pending,
+        "inbound_pending": inbound_pending,
     }
 
 
@@ -462,14 +571,6 @@ def leave_party(
     return {"left": True, "party": _enrich_party(solo)}
 
 
-def _is_captain(party: dict[str, Any], discord_id: int) -> bool:
-    captain_id = party.get("captain_discord_id")
-    try:
-        return int(captain_id) == int(discord_id)
-    except (TypeError, ValueError):
-        return captain_id == discord_id
-
-
 @router.post("/parties/{party_id}/join-queue")
 def join_queue_endpoint(
     party_id: str, user: CurrentUser = Depends(require_linked_fc)
@@ -576,7 +677,13 @@ def get_party_by_invite_code(
 
 
 class PartyInviteCreate(BaseModel):
+    # Accept digit string from the web client — JS Number() corrupts snowflakes.
     target_discord_id: int
+
+    @field_validator("target_discord_id", mode="before")
+    @classmethod
+    def _snowflake(cls, value: object) -> int:
+        return int(str(value).strip())
 
 
 @router.post("/parties/{party_id}/invites", status_code=status.HTTP_201_CREATED)
@@ -588,14 +695,27 @@ def invite_to_party(
     party = get_party(party_id)
     if not party:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Party not found.")
-    if party.get("captain_discord_id") != user.discord_id:
+    if not _is_captain(party, user.discord_id):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Only the captain can send invites.")
     if is_roster_full(party.get("lineup", [])):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "This party's roster is already full (5/5).")
     if _player_in_lineup(party.get("lineup", []), body.target_discord_id):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "That player is already in this party.")
 
-    return create_party_invite(party_id, user.discord_id, body.target_discord_id)
+    invite = create_party_invite(party_id, user.discord_id, body.target_discord_id)
+    from utils.event_bus import publish_event
+
+    publish_event(
+        "queue",
+        {
+            "action": "invite_created",
+            "invite_id": invite.get("invite_id"),
+            "party_id": party_id,
+            "from_discord_id": user.discord_id,
+            "target_discord_id": int(body.target_discord_id),
+        },
+    )
+    return invite
 
 
 # ---------------------------------------------------------------------------
@@ -678,30 +798,6 @@ def available_allies(
     return results
 
 
-def _redact_for_queue_spy(war: dict[str, Any]) -> dict[str, Any]:
-    """Supporter preview: keep ranks only — no names, avatars, or Discord ids."""
-    out = dict(war)
-    redacted = []
-    for i, entry in enumerate(war.get("lineup") or []):
-        redacted.append(
-            {
-                "discord_id": f"spy-{i}",
-                "player": "?",
-                "role": entry.get("role"),
-                "bagger": entry.get("bagger"),
-                "rank": entry.get("rank") or "unranked",
-                "sr": None,
-                "avatar": None,
-                "avatarUrl": None,
-                "name_color": None,
-            }
-        )
-    out["lineup"] = redacted
-    out["team_name"] = None
-    out["author_discord_id"] = None
-    return out
-
-
 def _entry_display_sr(entry: dict[str, Any], war_type: str) -> int:
     """Prefer TrueSkill display SR; fall back to legacy player MMR."""
     from utils.sr import get_player_rating
@@ -747,7 +843,7 @@ def available_opponents(
     from utils.search_time import opponent_search_unlocked
     from api.services.profile_fields import is_supporter
 
-    war_type, _mode = parse_board_key(board)
+    war_type, mode = parse_board_key(board)
     viewer = get_active_party_for_user(user.discord_id)
     queue_spy = bool(
         viewer
@@ -755,6 +851,7 @@ def available_opponents(
         and viewer.get("lobby_mode") == "preview"
         and is_supporter(user.discord_id)
     )
+    ranked_board = str(mode or "").lower() == "ranked"
 
     your_avg: int | None = None
     viewer_war = find_war_by_author(board, user.discord_id)
@@ -794,9 +891,20 @@ def available_opponents(
         )
         if queue_spy:
             enriched = _redact_for_queue_spy(enriched)
-            # Keep aggregate SR hint for spy without revealing identities.
             enriched["team_avg_sr"] = team_avg_sr
             enriched["delta_vs_you"] = None
+        elif ranked_board:
+            enriched = _redact_ranked_opponent(enriched, team_avg_sr)
+            enriched["delta_vs_you"] = None
+        else:
+            from utils.sr import rank_for_sr
+
+            enriched["team_avg_rank"] = (
+                rank_for_sr(int(team_avg_sr), revealed=True)
+                if team_avg_sr is not None
+                else "unranked"
+            )
+            enriched["anonymous"] = False
         results.append(enriched)
     return results
 
@@ -1188,6 +1296,18 @@ def _accept_party_invite(invite: dict[str, Any], user: CurrentUser) -> dict[str,
         invite["status"] = "accepted"
         upsert_party_invite(invite)
         delete_party_invite(invite["invite_id"])
+        from utils.event_bus import publish_event
+
+        publish_event(
+            "queue",
+            {
+                "action": "invite_accepted",
+                "invite_id": invite.get("invite_id"),
+                "party_id": party_a.get("party_id"),
+                "from_discord_id": invite.get("from_discord_id"),
+                "target_discord_id": invite.get("target_discord_id"),
+            },
+        )
         return {"kind": "invite", "party": party_a}
 
     # Inviter's party always absorbs the invitee's party.
@@ -1234,6 +1354,18 @@ def _accept_party_invite(invite: dict[str, Any], user: CurrentUser) -> dict[str,
     invite["status"] = "accepted"
     upsert_party_invite(invite)
     delete_party_invite(invite["invite_id"])
+    from utils.event_bus import publish_event
+
+    publish_event(
+        "queue",
+        {
+            "action": "invite_accepted",
+            "invite_id": invite.get("invite_id"),
+            "party_id": survivor.get("party_id"),
+            "from_discord_id": invite.get("from_discord_id"),
+            "target_discord_id": invite.get("target_discord_id"),
+        },
+    )
     return {"kind": "invite", "party": survivor}
 
 
@@ -1244,6 +1376,18 @@ def _deny_party_invite(invite: dict[str, Any], user: CurrentUser) -> dict[str, A
         raise HTTPException(status.HTTP_403_FORBIDDEN, "This invite does not belong to you.")
 
     delete_party_invite(invite["invite_id"])
+    from utils.event_bus import publish_event
+
+    publish_event(
+        "queue",
+        {
+            "action": "invite_denied",
+            "invite_id": invite.get("invite_id"),
+            "party_id": invite.get("party_id"),
+            "from_discord_id": invite.get("from_discord_id"),
+            "target_discord_id": invite.get("target_discord_id"),
+        },
+    )
     return {"kind": "invite", "status": "denied"}
 
 

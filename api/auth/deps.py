@@ -62,8 +62,9 @@ def get_current_user(request: Request) -> CurrentUser:
     )
 
 
-def require_linked_fc(user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
+async def require_linked_fc(user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
     """Gate for queue actions: the user must have a linked Wii friend code."""
+    from utils.player_links import resolve_friend_code
     from utils.player_profile_store import has_linked_fc
 
     try:
@@ -74,9 +75,21 @@ def require_linked_fc(user: CurrentUser = Depends(get_current_user)) -> CurrentU
             detail=f"Could not verify friend code link: {exc}",
         ) from exc
 
-    if not linked:
+    if linked:
+        return user
+
+    # Best-effort auto-link from Lounge / known sources (same as Discord `/profile link`).
+    try:
+        fc = await resolve_friend_code(user.discord_id)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Could not verify friend code link: {exc}",
+        ) from exc
+
+    if not fc:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Link your Wii friend code first (Discord `/profile link`).",
+            detail="Link your Wii friend code first (Profile page or Discord `/profile link`).",
         )
     return user

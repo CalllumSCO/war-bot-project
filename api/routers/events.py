@@ -23,8 +23,8 @@ from utils.db import get_conn, use_json_stores
 
 router = APIRouter(tags=["events"])
 
-POLL_INTERVAL_SECONDS = 2
-HEARTBEAT_EVERY_N_POLLS = 8  # ~16s at the default poll interval
+POLL_INTERVAL_SECONDS = 1.5
+HEARTBEAT_EVERY_N_POLLS = 10  # ~15s at the default poll interval
 
 
 def _sse(event: str, data: Any) -> str:
@@ -96,7 +96,13 @@ async def stream_events(request: Request, user: CurrentUser = Depends(get_curren
             try:
                 for event in _poll_event_bus(last_event_id):
                     last_event_id = event["id"]
-                    yield _sse(event["event_type"], event["payload"])
+                    event_type = str(event["event_type"] or "message")
+                    payload = event["payload"]
+                    yield _sse(event_type, payload)
+                    # Also fan out a generic queue bump so the web board refreshes
+                    # even when the client only listens for `queue`.
+                    if event_type in ("party_sync", "queue", "hub"):
+                        yield _sse("queue", {"source": event_type, "payload": payload})
             except Exception as exc:
                 print(f"⚠️ event_bus poll failed: {exc}")
 
@@ -106,6 +112,7 @@ async def stream_events(request: Request, user: CurrentUser = Depends(get_curren
                 if snapshot != last_party_snapshot:
                     last_party_snapshot = snapshot
                     yield _sse("party", party)
+                    yield _sse("queue", {"source": "party", "party_id": (party or {}).get("party_id")})
             except Exception as exc:
                 print(f"⚠️ party bump poll failed: {exc}")
 

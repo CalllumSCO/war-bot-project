@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ApiError, getCachedProfile, getMe, type MeProfile } from "@/lib/api";
+import FriendCodeLinkCard from "@/components/FriendCodeLinkCard";
 import ProfileView from "@/components/ProfileView";
 
 function ProfileSkeleton() {
@@ -83,7 +84,8 @@ export default function MePage() {
   }
 
   return (
-    <main className="mx-auto max-w-3xl px-4 py-8">
+    <main className="mx-auto max-w-3xl space-y-4 px-4 py-8">
+      <FriendCodeLinkCard profile={profile} onLinked={setProfile} />
       <ProfileView
         profile={profile}
         headerAction={

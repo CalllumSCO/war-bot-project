@@ -24,21 +24,19 @@ import { rankIconSrc, rankLabel } from "@/lib/ranks";
 import GroupCard from "./GroupCard";
 import InviteCard from "./InviteCard";
 import FillingSurfaceIcons from "./FillingSurfaceIcons";
+import PendingOutboundCard from "./PendingOutboundCard";
 import PlayerRow from "./PlayerRow";
 import QueueStartScreen, { type StartChoices } from "./QueueStartScreen";
 
-const POLL_INTERVAL_MS = 15000;
+const POLL_INTERVAL_MS = 3000;
 
 function SpyAvailableCard({ entry }: { entry: AvailableEntry }) {
   return (
     <div className="rounded-2xl border border-border bg-panel/60 p-3 shadow-panel">
       <div className="mb-2 flex items-center justify-between gap-2 px-0.5">
         <FillingSurfaceIcons surface={entry.fillingSurface} />
-        {entry.lookingFor && (
-          <p className="truncate text-right text-xs text-accent/90">{entry.lookingFor}</p>
-        )}
       </div>
-      <div className="flex flex-wrap items-center gap-1.5">
+      <div className="flex flex-wrap items-center justify-center gap-1.5">
         {entry.players.map((player) => {
           const icon = rankIconSrc(player.rank ?? "unranked");
           return icon ? (
@@ -60,6 +58,43 @@ function SpyAvailableCard({ entry }: { entry: AvailableEntry }) {
           );
         })}
       </div>
+    </div>
+  );
+}
+
+function RankedOpponentCard({
+  entry,
+  busy,
+  onChallenge,
+}: {
+  entry: AvailableEntry;
+  busy: boolean;
+  onChallenge: (entry: AvailableEntry) => void;
+}) {
+  const icon = rankIconSrc(entry.teamAvgRank ?? "unranked");
+  return (
+    <div className="rounded-2xl border border-border bg-panel/60 p-3 shadow-panel">
+      <div className="mb-3 flex justify-center py-2">
+        {icon ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={icon}
+            alt={rankLabel(entry.teamAvgRank)}
+            title={rankLabel(entry.teamAvgRank)}
+            className="h-16 w-16"
+          />
+        ) : (
+          <span className="text-sm text-muted">?</span>
+        )}
+      </div>
+      <button
+        type="button"
+        onClick={() => onChallenge(entry)}
+        disabled={busy}
+        className="w-full rounded-xl border border-border bg-elevated px-3 py-2 text-sm font-semibold text-fg transition hover:border-accent/50 hover:text-accent disabled:opacity-50"
+      >
+        Challenge
+      </button>
     </div>
   );
 }
@@ -104,12 +139,10 @@ function ColumnShell({
   title,
   count,
   children,
-  tabs,
 }: {
   title: string;
   count?: number;
   children: React.ReactNode;
-  tabs?: React.ReactNode;
 }) {
   return (
     <section className="flex max-h-[min(70vh,36rem)] flex-col rounded-2xl border border-border bg-panel/80 shadow-panel">
@@ -117,7 +150,6 @@ function ColumnShell({
         <h2 className="text-xs font-semibold uppercase tracking-wide text-muted">{title}</h2>
         {count != null && <span className="text-xs text-muted">{count}</span>}
       </header>
-      {tabs}
       <div className="scroll-thin min-h-0 flex-1 space-y-2.5 overflow-y-auto p-3 pt-2">
         {children}
       </div>
@@ -136,7 +168,6 @@ export default function QueueBoard() {
   const [busyInviteTargets, setBusyInviteTargets] = useState<Set<string>>(new Set());
   const [busyUndoIds, setBusyUndoIds] = useState<Set<string>>(new Set());
   const [busyInvitationIds, setBusyInvitationIds] = useState<Set<string>>(new Set());
-  const [availableTab, setAvailableTab] = useState<"allies" | "opponents">("allies");
   const mountedRef = useRef(true);
 
   const fetchState = useCallback(
@@ -147,9 +178,6 @@ export default function QueueBoard() {
         if (!mountedRef.current) return;
         setData(state);
         setError(null);
-        if (!state.showOpponents && availableTab === "opponents") {
-          setAvailableTab("allies");
-        }
       } catch (err) {
         if (!mountedRef.current) return;
         if (err instanceof ApiError && err.status === 401) {
@@ -161,14 +189,16 @@ export default function QueueBoard() {
         if (mountedRef.current && showSpinner) setLoading(false);
       }
     },
-    [router, availableTab]
+    [router]
   );
 
   useEffect(() => {
     mountedRef.current = true;
     fetchState(true);
     const interval = setInterval(() => fetchState(false), POLL_INTERVAL_MS);
-    const unsub = subscribeEvents(() => {
+    const unsub = subscribeEvents((eventType) => {
+      // Ignore connect handshake + match chat; refresh for queue/party/hub bumps.
+      if (eventType === "connected" || eventType === "chat") return;
       void fetchState(false);
     });
     return () => {
@@ -214,7 +244,7 @@ export default function QueueBoard() {
         setStartError(
           detail.includes("supporter")
             ? "Queue preview is a supporter perk."
-            : "Link your Wii friend code in Discord with /profile link before queueing."
+            : "Link your Wii friend code on your Profile page before queueing."
         );
       } else if (err instanceof ApiError && err.status === 409) {
         await fetchState(false);
@@ -232,7 +262,8 @@ export default function QueueBoard() {
     withInviteBusy(key, true, setBusyInviteTargets);
     try {
       if (entry.kind === "opponents") {
-        await createMatchRequest(entry.id);
+        const warId = entry.warId ?? entry.id;
+        await createMatchRequest(warId);
       } else if (entry.action === "request_join" && entry.warId) {
         const myRole =
           data?.myGroup?.members.find((m) => m.discordId === data.myGroup?.captainDiscordId)
@@ -247,7 +278,7 @@ export default function QueueBoard() {
       await fetchState(false);
     } catch (err) {
       if (entry.kind === "opponents") {
-        setError("Couldn't send that match request. Try again.");
+        setError("Couldn't send that challenge. Try again.");
       } else if (entry.action === "request_join") {
         const detail =
           err instanceof ApiError
@@ -339,10 +370,16 @@ export default function QueueBoard() {
   const showAvailable = Boolean(data?.showAvailable);
   const showOpponents = Boolean(data?.showOpponents);
   const queueSpy = Boolean(data?.queueSpy);
-  const list =
-    showOpponents && availableTab === "opponents"
-      ? data?.opponents ?? []
-      : data?.available ?? [];
+  const seekingOpponents = showOpponents && !queueSpy;
+  const rankedMode = (data.myGroup.mode ?? "ranked").toLowerCase() === "ranked";
+  const list = seekingOpponents || (queueSpy && showOpponents)
+    ? data?.opponents ?? []
+    : data?.available ?? [];
+  const availableTitle = queueSpy
+    ? "Available · Preview"
+    : seekingOpponents
+      ? "Opponents"
+      : "Available";
 
   return (
     <main className="mx-auto max-w-6xl px-4 py-6">
@@ -364,54 +401,31 @@ export default function QueueBoard() {
           showAvailable ? "md:grid-cols-3" : "md:grid-cols-2"
         }`}
       >
-        <GroupCard
-          group={data.myGroup}
-          busyInviteIds={busyUndoIds}
-          queueActionBusy={queueActionBusy}
-          onUndoInvite={handleUndoInvite}
-          onJoinQueue={() => runQueueAction(joinQueue)}
-          onLeaveQueue={() => runQueueAction(leaveQueue)}
-          onPostToAllies={() => runQueueAction(postToAlliesBillboard)}
-          onLeaveGroup={() => runQueueAction(leaveGroup)}
-          onChangeTrack={(warType) => patchParty({ war_type: warType })}
-          onChangeRole={(role) =>
-            patchParty({ role: role === "bagger" ? "Bagger" : "Runner" })
-          }
-        />
+        <div className="flex min-w-0 flex-col gap-2.5">
+          <GroupCard
+            group={data.myGroup}
+            queueActionBusy={queueActionBusy}
+            onJoinQueue={() => runQueueAction(joinQueue)}
+            onLeaveQueue={() => runQueueAction(leaveQueue)}
+            onPostToAllies={() => runQueueAction(postToAlliesBillboard)}
+            onLeaveGroup={() => runQueueAction(leaveGroup)}
+            onChangeTrack={(warType) => patchParty({ war_type: warType })}
+            onChangeRole={(role) =>
+              patchParty({ role: role === "bagger" ? "Bagger" : "Runner" })
+            }
+          />
+          {(data.myGroup.pendingOutbound ?? []).map((pending) => (
+            <PendingOutboundCard
+              key={pending.id}
+              pending={pending}
+              busy={busyUndoIds.has(pending.id)}
+              onUndo={handleUndoInvite}
+            />
+          ))}
+        </div>
 
         {showAvailable ? (
-          <ColumnShell
-            title={queueSpy ? "Available · Preview" : "Available"}
-            count={list.length}
-            tabs={
-              showOpponents ? (
-                <div className="flex gap-1 border-b border-border px-3 py-2">
-                  <button
-                    type="button"
-                    onClick={() => setAvailableTab("allies")}
-                    className={`rounded-md px-2.5 py-1 text-xs font-medium ${
-                      availableTab === "allies"
-                        ? "bg-accent/15 text-accent"
-                        : "text-muted hover:text-fg"
-                    }`}
-                  >
-                    Allies
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setAvailableTab("opponents")}
-                    className={`rounded-md px-2.5 py-1 text-xs font-medium ${
-                      availableTab === "opponents"
-                        ? "bg-accent/15 text-accent"
-                        : "text-muted hover:text-fg"
-                    }`}
-                  >
-                    Opponents
-                  </button>
-                </div>
-              ) : null
-            }
-          >
+          <ColumnShell title={availableTitle} count={list.length}>
             {queueSpy ? (
               <p className="mb-2 px-0.5 text-xs text-muted">
                 Supporter preview — ranks only. Join queue to interact and apply role filters.
@@ -419,7 +433,7 @@ export default function QueueBoard() {
             ) : null}
             {!list.length ? (
               <p className="py-8 text-center text-sm text-muted">
-                {availableTab === "opponents"
+                {seekingOpponents
                   ? "No opponent groups right now."
                   : queueSpy
                     ? "No one else is queueing right now."
@@ -432,10 +446,21 @@ export default function QueueBoard() {
               </p>
             ) : (
               <div className="flex flex-col gap-2.5">
-                {list.map((entry) =>
-                  queueSpy ? (
-                    <SpyAvailableCard key={entry.id} entry={entry} />
-                  ) : (
+                {list.map((entry) => {
+                  if (queueSpy) {
+                    return <SpyAvailableCard key={entry.id} entry={entry} />;
+                  }
+                  if (seekingOpponents && (entry.anonymous || rankedMode)) {
+                    return (
+                      <RankedOpponentCard
+                        key={entry.id}
+                        entry={entry}
+                        busy={busyInviteTargets.has(entry.id)}
+                        onChallenge={handleAvailableAction}
+                      />
+                    );
+                  }
+                  return (
                     <AvailableCard
                       key={entry.id}
                       entry={entry}
@@ -443,14 +468,14 @@ export default function QueueBoard() {
                       onAction={handleAvailableAction}
                       actionLabel={
                         entry.kind === "opponents"
-                          ? "Request match"
+                          ? "Challenge"
                           : entry.action === "request_join"
                             ? "Request to join"
                             : "Invite"
                       }
                     />
-                  )
-                )}
+                  );
+                })}
               </div>
             )}
           </ColumnShell>

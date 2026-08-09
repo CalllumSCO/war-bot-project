@@ -160,7 +160,8 @@ async def callback(
     session_token = create_access_token(
         {
             "sub": str(discord_id),
-            "discord_id": discord_id,
+            # String — JS JSON.parse corrupts snowflake ints in JWT payloads too.
+            "discord_id": str(discord_id),
             "username": username,
             "discriminator": discord_user.get("discriminator"),
             "global_name": global_name,

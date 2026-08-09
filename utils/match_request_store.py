@@ -139,6 +139,19 @@ def list_pending_match_for_requester_war(requester_war_id: str) -> list[Dict[str
     return out
 
 
+def list_pending_match_for_target_war(target_war_id: str) -> list[Dict[str, Any]]:
+    out: list[Dict[str, Any]] = []
+    if not target_war_id:
+        return out
+    for request in _all_requests().values():
+        if (
+            request.get("status") == "pending"
+            and str(request.get("target_war_id") or "") == str(target_war_id)
+        ):
+            out.append(request)
+    return out
+
+
 def create_request(
     board: str,
     target_war_id: str,
