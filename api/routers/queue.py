@@ -9,7 +9,10 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field, field_validator
 
 from api.auth.deps import CurrentUser, get_current_user, require_linked_fc
-from api.services.profile_fields import get_extended_profile_fields
+from api.services.profile_fields import (
+    get_extended_profile_fields,
+    get_extended_profile_fields_many,
+)
 from classes.player import Player
 from classes.queue_party import MODE_RANKED, PARTY_POSTED, PARTY_PREPARING, QueueParty
 from domain.match import (
@@ -88,7 +91,13 @@ def _is_captain(party: dict[str, Any], discord_id: int) -> bool:
     return _ids_equal(party.get("captain_discord_id"), discord_id)
 
 
-def _enrich_lineup_entry(entry: dict[str, Any], war_type: str) -> dict[str, Any]:
+def _enrich_lineup_entry(
+    entry: dict[str, Any],
+    war_type: str,
+    *,
+    profiles: dict[int, dict[str, Any]] | None = None,
+    ratings: dict[int, dict[str, dict[str, Any]]] | None = None,
+) -> dict[str, Any]:
     """Attach display-only avatar / SR / rank for the web UI (not persisted)."""
     out = dict(entry)
     discord_id = entry.get("discord_id")
@@ -96,11 +105,16 @@ def _enrich_lineup_entry(entry: dict[str, Any], war_type: str) -> dict[str, Any]
         return out
     # Always string — JS JSON.parse corrupts snowflake ints (>2^53).
     try:
-        out["discord_id"] = str(int(discord_id))
+        did = int(discord_id)
+        out["discord_id"] = str(did)
     except (TypeError, ValueError):
         out["discord_id"] = str(discord_id)
+        return out
+
     try:
-        extended = get_extended_profile_fields(int(discord_id))
+        extended = (profiles or {}).get(did)
+        if extended is None:
+            extended = get_extended_profile_fields(did)
         if extended.get("discord_avatar_url"):
             out["avatar"] = extended["discord_avatar_url"]
         if extended.get("display_name"):
@@ -109,19 +123,52 @@ def _enrich_lineup_entry(entry: dict[str, Any], war_type: str) -> dict[str, Any]
             out["name_color"] = extended["chat_name_color"]
     except Exception:
         pass
+
     try:
-        rating = get_player_rating(
-            int(discord_id),
-            war_type,
-            bagger=bool(entry.get("bagger") or str(entry.get("role") or "").lower() == "bagger"),
-            role=entry.get("role"),
-        )
-        revealed = bool(rating.get("revealed"))
-        out["rank"] = rating.get("rank") if revealed else "unranked"
-        out["sr"] = int(rating["sr"]) if revealed and rating.get("sr") is not None else None
+        is_bagger = bool(entry.get("bagger") or str(entry.get("role") or "").lower() == "bagger")
+        role_key = "bagger" if is_bagger else "runner"
+        rating = None
+        if ratings is not None and did in ratings:
+            rating = ratings[did].get(role_key)
+        if rating is None:
+            from utils.sr import get_player_rating
+
+            rating = get_player_rating(
+                did,
+                war_type,
+                bagger=is_bagger,
+                role=entry.get("role"),
+            )
+        revealed = bool((rating or {}).get("revealed"))
+        out["rank"] = (rating or {}).get("rank") if revealed else "unranked"
+        sr = (rating or {}).get("sr")
+        out["sr"] = int(sr) if revealed and sr is not None else None
     except Exception:
         out.setdefault("rank", "unranked")
     return out
+
+
+def _batch_enrich_lineup(lineup: list[dict[str, Any]], war_type: str) -> list[dict[str, Any]]:
+    """Enrich a lineup with two DB round-trips total (profiles + ratings)."""
+    ids: list[int] = []
+    for entry in lineup or []:
+        raw = entry.get("discord_id")
+        if raw is None:
+            continue
+        try:
+            ids.append(int(raw))
+        except (TypeError, ValueError):
+            continue
+    profiles = get_extended_profile_fields_many(ids) if ids else {}
+    ratings: dict[int, dict[str, dict[str, Any]]] = {}
+    if ids:
+        from utils.sr import get_player_ratings_for_ids
+
+        ratings = get_player_ratings_for_ids(ids, war_type)
+    return [
+        _enrich_lineup_entry(entry, war_type, profiles=profiles, ratings=ratings)
+        for entry in (lineup or [])
+    ]
 
 
 def _enrich_party(party: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -129,10 +176,11 @@ def _enrich_party(party: dict[str, Any] | None) -> dict[str, Any] | None:
         return None
     war_type = party.get("war_type") or "RT"
     enriched = dict(party)
-    enriched["lineup"] = [_enrich_lineup_entry(p, war_type) for p in party.get("lineup", [])]
+    lineup = list(party.get("lineup", []) or [])
+    enriched["lineup"] = _batch_enrich_lineup(lineup, war_type)
     enriched["filling_surface"] = filling_surface(party=party)
     enriched["lobby_mode"] = party.get("lobby_mode")
-    avg_sr = _lineup_avg_sr(party.get("lineup", []), war_type)
+    avg_sr = _lineup_avg_sr(enriched["lineup"], war_type, prefer_enriched=True)
     enriched["team_avg_sr"] = avg_sr
     if avg_sr is not None:
         from utils.sr import rank_for_sr
@@ -172,7 +220,7 @@ def _enrich_inbound_invite(invite: dict[str, Any]) -> dict[str, Any]:
                     "bagger": False,
                 }
             ]
-    out["from_lineup"] = [_enrich_lineup_entry(entry, war_type) for entry in lineup]
+    out["from_lineup"] = _batch_enrich_lineup(lineup, war_type)
     return out
 
 
@@ -219,7 +267,7 @@ def _redact_for_queue_spy(war: dict[str, Any]) -> dict[str, Any]:
 def _enrich_war(war: dict[str, Any]) -> dict[str, Any]:
     war_type = war.get("war_type") or "RT"
     enriched = dict(war)
-    enriched["lineup"] = [_enrich_lineup_entry(p, war_type) for p in war.get("lineup", [])]
+    enriched["lineup"] = _batch_enrich_lineup(list(war.get("lineup", []) or []), war_type)
     # Prefer party metadata when linked — more accurate for web vs mixed.
     party = get_party(war["party_id"]) if war.get("party_id") else None
     enriched["filling_surface"] = (
@@ -798,8 +846,18 @@ def available_allies(
     return results
 
 
-def _entry_display_sr(entry: dict[str, Any], war_type: str) -> int:
+def _entry_display_sr(
+    entry: dict[str, Any],
+    war_type: str,
+    *,
+    prefer_enriched: bool = False,
+) -> int:
     """Prefer TrueSkill display SR; fall back to legacy player MMR."""
+    if prefer_enriched and entry.get("sr") is not None:
+        try:
+            return int(entry["sr"])
+        except (TypeError, ValueError):
+            pass
     from utils.sr import get_player_rating
 
     discord_id = entry.get("discord_id")
@@ -826,8 +884,17 @@ def _entry_display_sr(entry: dict[str, Any], war_type: str) -> int:
         return 0
 
 
-def _lineup_avg_sr(lineup: list[dict[str, Any]], war_type: str) -> int | None:
-    scores = [_entry_display_sr(entry, war_type) for entry in lineup or [] if entry.get("discord_id")]
+def _lineup_avg_sr(
+    lineup: list[dict[str, Any]],
+    war_type: str,
+    *,
+    prefer_enriched: bool = False,
+) -> int | None:
+    scores = [
+        _entry_display_sr(entry, war_type, prefer_enriched=prefer_enriched)
+        for entry in lineup or []
+        if entry.get("discord_id")
+    ]
     if not scores:
         return None
     return round(sum(scores) / len(scores))

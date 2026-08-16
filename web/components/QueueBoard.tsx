@@ -28,7 +28,9 @@ import PendingOutboundCard from "./PendingOutboundCard";
 import PlayerRow from "./PlayerRow";
 import QueueStartScreen, { type StartChoices } from "./QueueStartScreen";
 
-const POLL_INTERVAL_MS = 3000;
+const POLL_INTERVAL_MS = 15000;
+const POLL_INTERVAL_SSE_DOWN_MS = 3000;
+const SSE_DEBOUNCE_MS = 400;
 
 function SpyAvailableCard({ entry }: { entry: AvailableEntry }) {
   return (
@@ -169,6 +171,9 @@ export default function QueueBoard() {
   const [busyUndoIds, setBusyUndoIds] = useState<Set<string>>(new Set());
   const [busyInvitationIds, setBusyInvitationIds] = useState<Set<string>>(new Set());
   const mountedRef = useRef(true);
+  const sseDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const lastFetchAtRef = useRef(0);
 
   const fetchState = useCallback(
     async (showSpinner: boolean) => {
@@ -176,6 +181,7 @@ export default function QueueBoard() {
       try {
         const state = await getQueueState();
         if (!mountedRef.current) return;
+        lastFetchAtRef.current = Date.now();
         setData(state);
         setError(null);
       } catch (err) {
@@ -192,21 +198,50 @@ export default function QueueBoard() {
     [router]
   );
 
+  const scheduleFetch = useCallback(
+    (showSpinner: boolean, debounceMs = 0) => {
+      if (debounceMs <= 0) {
+        void fetchState(showSpinner);
+        return;
+      }
+      if (sseDebounceRef.current) clearTimeout(sseDebounceRef.current);
+      sseDebounceRef.current = setTimeout(() => {
+        // Skip if we just refreshed (e.g. manual invite refresh + SSE bump).
+        if (Date.now() - lastFetchAtRef.current < SSE_DEBOUNCE_MS) return;
+        void fetchState(showSpinner);
+      }, debounceMs);
+    },
+    [fetchState]
+  );
+
   useEffect(() => {
     mountedRef.current = true;
     fetchState(true);
-    const interval = setInterval(() => fetchState(false), POLL_INTERVAL_MS);
-    const unsub = subscribeEvents((eventType) => {
-      // Ignore connect handshake + match chat; refresh for queue/party/hub bumps.
-      if (eventType === "connected" || eventType === "chat") return;
-      void fetchState(false);
-    });
+
+    const startPoll = (ms: number) => {
+      if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+      pollIntervalRef.current = setInterval(() => fetchState(false), ms);
+    };
+    startPoll(POLL_INTERVAL_MS);
+
+    const unsub = subscribeEvents(
+      (eventType) => {
+        // Ignore connect handshake + match chat; refresh for queue/party/hub bumps.
+        if (eventType === "connected" || eventType === "chat") return;
+        scheduleFetch(false, SSE_DEBOUNCE_MS);
+      },
+      () => {
+        // SSE unhealthy — fall back to faster polling until reconnect.
+        startPoll(POLL_INTERVAL_SSE_DOWN_MS);
+      }
+    );
     return () => {
       mountedRef.current = false;
-      clearInterval(interval);
+      if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+      if (sseDebounceRef.current) clearTimeout(sseDebounceRef.current);
       unsub();
     };
-  }, [fetchState]);
+  }, [fetchState, scheduleFetch]);
 
   const withInviteBusy = (id: string, busy: boolean, set: typeof setBusyInviteTargets) => {
     set((prev) => {
@@ -273,7 +308,7 @@ export default function QueueBoard() {
       } else {
         const target =
           entry.inviteTargetDiscordId ?? entry.players[0]?.discordId ?? "";
-        await inviteEntry(target);
+        await inviteEntry(target, data?.myGroup?.partyId);
       }
       await fetchState(false);
     } catch (err) {
@@ -405,9 +440,11 @@ export default function QueueBoard() {
           <GroupCard
             group={data.myGroup}
             queueActionBusy={queueActionBusy}
-            onJoinQueue={() => runQueueAction(joinQueue)}
-            onLeaveQueue={() => runQueueAction(leaveQueue)}
-            onPostToAllies={() => runQueueAction(postToAlliesBillboard)}
+            onJoinQueue={() => runQueueAction(() => joinQueue(data.myGroup?.partyId))}
+            onLeaveQueue={() => runQueueAction(() => leaveQueue(data.myGroup?.partyId))}
+            onPostToAllies={() =>
+              runQueueAction(() => postToAlliesBillboard(data.myGroup?.partyId))
+            }
             onLeaveGroup={() => runQueueAction(leaveGroup)}
             onChangeTrack={(warType) => patchParty({ war_type: warType })}
             onChangeRole={(role) =>

@@ -17,7 +17,7 @@ _connector = None
 _connector_lock = threading.Lock()
 _initialized = False
 _use_json = False
-_pool: Queue = Queue(maxsize=5)
+_pool: Queue = Queue(maxsize=10)
 _using_database_url = False
 
 SCHEMA_PATH = Path(__file__).resolve().parent.parent / "sql" / "schema.sql"

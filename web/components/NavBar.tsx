@@ -5,7 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import {
   getCachedMe,
-  getMe,
+  getMeCached,
   hasUsableSession,
   profileAvatarUrl,
   profileDisplayName,
@@ -28,13 +28,14 @@ export default function NavBar() {
       return;
     }
     let mounted = true;
-    getMe()
+    getMeCached()
       .then((profile) => {
         if (!mounted) return;
         setMe({
           discord_id: profile.discord_id,
           display_name: profile.display_name ?? profile.displayName,
           avatar: profile.avatar ?? profile.avatarUrl,
+          supporter: Boolean(profile.supporter),
         });
       })
       .catch(() => {

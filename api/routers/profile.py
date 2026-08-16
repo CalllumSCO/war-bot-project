@@ -213,13 +213,25 @@ async def link_my_friend_code(
     return await get_my_profile(user)
 
 @router.get("/users/{discord_id}")
-def get_public_profile(
-    discord_id: int,
-    user: CurrentUser = Depends(get_current_user),
-) -> dict[str, Any]:
+def get_public_profile(discord_id: int) -> dict[str, Any]:
+    """Public profile for Discord `/profile` deep links — no auth required."""
     base = get_profile(discord_id)
     extended = get_extended_profile_fields(discord_id)
-    if not base and not any(extended.values()):
+
+    has_base = bool(
+        base
+        and (
+            base.get("friend_code")
+            or base.get("lounge_name")
+            or base.get("lounge_player_id")
+        )
+    )
+    has_extended = any(
+        value not in (None, "", False)
+        for key, value in extended.items()
+        if key != "supporter"
+    )
+    if not has_base and not has_extended:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Player not found.")
 
     return {

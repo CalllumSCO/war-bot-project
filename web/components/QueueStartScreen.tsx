@@ -5,7 +5,7 @@ import { useEffect, useState } from "react";
 import {
   getCachedProfile,
   getCachedMe,
-  getMe,
+  getMeCached,
   profileAvatarUrl,
   profileDisplayName,
   type Role,
@@ -42,7 +42,7 @@ export default function QueueStartScreen({
 
   useEffect(() => {
     let cancelled = false;
-    getMe()
+    getMeCached()
       .then((profile) => {
         if (!cancelled) setIsSupporter(Boolean(profile.supporter));
       })
@@ -157,10 +157,10 @@ export default function QueueStartScreen({
             <p>{error}</p>
             {/friend code/i.test(error) ? (
               <Link
-                href="/me"
+                href="/me/edit"
                 className="mt-1 inline-block font-medium underline underline-offset-2"
               >
-                Open Profile to link FC
+                Edit profile to link FC
               </Link>
             ) : null}
           </div>

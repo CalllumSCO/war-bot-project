@@ -23,8 +23,8 @@ from utils.db import get_conn, use_json_stores
 
 router = APIRouter(tags=["events"])
 
-POLL_INTERVAL_SECONDS = 1.5
-HEARTBEAT_EVERY_N_POLLS = 10  # ~15s at the default poll interval
+POLL_INTERVAL_SECONDS = 2.5
+HEARTBEAT_EVERY_N_POLLS = 6  # ~15s at the default poll interval
 
 
 def _sse(event: str, data: Any) -> str:

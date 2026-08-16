@@ -154,6 +154,66 @@ def get_player_ratings_map(discord_id: int) -> Dict[str, Dict[str, Any]]:
     return out
 
 
+def get_player_ratings_for_ids(
+    discord_ids: List[int],
+    war_type: str,
+) -> Dict[int, Dict[str, Dict[str, Any]]]:
+    """
+    Batch lane ratings for many players on one track.
+    Returns {discord_id: {"runner": rating, "bagger": rating}}.
+    """
+    track = _normalize_track(war_type)
+    unique: List[int] = []
+    seen = set()
+    for raw in discord_ids:
+        try:
+            did = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if did in seen:
+            continue
+        seen.add(did)
+        unique.append(did)
+
+    result: Dict[int, Dict[str, Dict[str, Any]]] = {
+        did: {
+            "runner": _blank_rating(did, track, "runner"),
+            "bagger": _blank_rating(did, track, "bagger"),
+        }
+        for did in unique
+    }
+    if not unique:
+        return result
+
+    if use_json_stores():
+        for did in unique:
+            result[did]["runner"] = get_player_rating(did, war_type, role="runner")
+            result[did]["bagger"] = get_player_rating(did, war_type, bagger=True, role="bagger")
+        return result
+
+    with get_conn() as conn:
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                """
+                SELECT discord_id, track, role, mu, sigma, placement_count, revealed, season_games
+                FROM player_ratings
+                WHERE discord_id = ANY(%s) AND track = %s
+                """,
+                (unique, track),
+            )
+            rows = cursor.fetchall()
+        finally:
+            cursor.close()
+    for row in rows:
+        rating = _row_to_rating(row)
+        did = int(rating["discord_id"])
+        role_key = str(rating["role"])
+        if did in result and role_key in result[did]:
+            result[did][role_key] = rating
+    return result
+
+
 def get_player_rating_uncached(
     discord_id: int,
     war_type: str,

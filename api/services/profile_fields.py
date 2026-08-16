@@ -94,6 +94,52 @@ def get_extended_profile_fields(discord_id: int) -> dict[str, Any]:
     return result
 
 
+def get_extended_profile_fields_many(discord_ids: list[int]) -> dict[int, dict[str, Any]]:
+    """Batch read of cosmetic fields — one query for many discord ids."""
+    unique: list[int] = []
+    seen: set[int] = set()
+    for raw in discord_ids:
+        try:
+            did = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if did in seen:
+            continue
+        seen.add(did)
+        unique.append(did)
+    if not unique:
+        return {}
+
+    if use_json_stores():
+        return {did: get_extended_profile_fields(did) for did in unique}
+
+    out: dict[int, dict[str, Any]] = {did: _defaults() for did in unique}
+    try:
+        with get_conn() as conn:
+            cursor = conn.cursor()
+            try:
+                cursor.execute(
+                    f"""
+                    SELECT discord_id, {", ".join(EXTENDED_FIELDS)}
+                    FROM players WHERE discord_id = ANY(%s)
+                    """,
+                    (unique,),
+                )
+                rows = cursor.fetchall()
+            finally:
+                cursor.close()
+    except Exception as exc:
+        print(f"⚠️ get_extended_profile_fields_many fallback: {exc}")
+        return {did: get_extended_profile_fields(did) for did in unique}
+
+    for row in rows:
+        did = int(row[0])
+        result = dict(zip(EXTENDED_FIELDS, row[1:]))
+        result["supporter"] = bool(result.get("supporter"))
+        out[did] = result
+    return out
+
+
 def update_extended_profile_fields(discord_id: int, **fields: Any) -> dict[str, Any]:
     """Best-effort write of a subset of the cosmetic profile fields."""
     cleaned: dict[str, Any] = {}

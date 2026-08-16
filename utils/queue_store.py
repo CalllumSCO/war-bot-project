@@ -80,19 +80,56 @@ def _discord_ids_equal(left: Any, right: Any) -> bool:
 
 def get_active_party_for_user(discord_id: int) -> Optional[Dict[str, Any]]:
     """Return the active party that includes this user in its lineup (preferred)."""
-    for party in list_parties():
-        if party.get("status") not in ("preparing", "posted", "matched"):
-            continue
-        for player in party.get("lineup", []):
-            if _discord_ids_equal(player.get("discord_id"), discord_id):
+    if use_json_stores():
+        for party in list_parties():
+            if party.get("status") not in ("preparing", "posted", "matched"):
+                continue
+            for player in party.get("lineup", []):
+                if _discord_ids_equal(player.get("discord_id"), discord_id):
+                    return party
+        for party in list_parties():
+            if party.get("status") not in ("preparing", "posted", "matched"):
+                continue
+            if _discord_ids_equal(party.get("captain_discord_id"), discord_id):
                 return party
-    # Fallback: captain of a party with a desynced/empty lineup still owns it.
-    for party in list_parties():
-        if party.get("status") not in ("preparing", "posted", "matched"):
-            continue
-        if _discord_ids_equal(party.get("captain_discord_id"), discord_id):
-            return party
-    return None
+        return None
+
+    did = int(discord_id)
+    did_str = str(did)
+    with get_conn() as conn:
+        cursor = conn.cursor()
+        try:
+            # Prefer lineup membership, then captain ownership — no full-table Python scan.
+            cursor.execute(
+                """
+                SELECT data FROM queue_parties
+                WHERE status IN ('preparing', 'posted', 'matched')
+                  AND (
+                    captain_discord_id = %s
+                    OR EXISTS (
+                      SELECT 1
+                      FROM jsonb_array_elements(COALESCE(data->'lineup', '[]'::jsonb)) AS elem
+                      WHERE elem->>'discord_id' = %s
+                         OR elem->>'discord_id' = %s
+                         OR TRIM(BOTH '"' FROM (elem->'discord_id')::text) = %s
+                    )
+                  )
+                ORDER BY CASE WHEN captain_discord_id = %s
+                  AND NOT EXISTS (
+                    SELECT 1
+                    FROM jsonb_array_elements(COALESCE(data->'lineup', '[]'::jsonb)) AS elem
+                    WHERE elem->>'discord_id' = %s
+                       OR TRIM(BOTH '"' FROM (elem->'discord_id')::text) = %s
+                  ) THEN 1 ELSE 0 END,
+                  updated_at DESC NULLS LAST
+                LIMIT 1
+                """,
+                (did, did_str, str(did), did_str, did, did_str, did_str),
+            )
+            row = cursor.fetchone()
+        finally:
+            cursor.close()
+    return _parse(row[0]) if row else None
 
 
 def get_active_party_for_guild(guild_id: int) -> Optional[Dict[str, Any]]:

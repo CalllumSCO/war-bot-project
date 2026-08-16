@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ApiError, getMe, updateMe, type MeProfile } from "@/lib/api";
+import FriendCodeLinkCard from "@/components/FriendCodeLinkCard";
 
 type LinkField = {
   key: "mkc_url" | "lounge_url" | "x_url" | "bluesky_url" | "youtube_url" | "twitch_url";
@@ -148,6 +149,15 @@ export default function EditProfilePage() {
           {error}
         </div>
       )}
+
+      <div className="mb-4">
+        <FriendCodeLinkCard
+          profile={profile}
+          onLinked={(updated) => {
+            setProfile(updated);
+          }}
+        />
+      </div>
 
       <section className="rounded-2xl border border-border bg-panel p-5 shadow-panel">
         <h2 className="text-sm font-semibold text-fg">Bio</h2>
