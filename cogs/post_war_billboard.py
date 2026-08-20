@@ -2,12 +2,13 @@ import interactions
 from dotenv import load_dotenv
 from interactions import Extension, Client, listen, Task, IntervalTrigger
 
-from domain.queue import get_party, promote_due_opponent_searches
+from domain.queue import get_party, promote_due_opponent_searches, sweep_idle_queue_parties
 from utils.billboard_store import load_wars
 from utils.boards import ALL_BOARD_KEYS
 from utils.channel_access import can_access_guild, fetch_accessible_channel
 from utils.embeds import build_war_embed
 from utils.guild_config import list_billboard_channel_targets
+from utils.queue_service import is_queue_hidden
 from utils.war_buttons import build_war_buttons
 
 load_dotenv(".env.local")
@@ -26,10 +27,15 @@ class PostWarBillboard(Extension):
         return self.board_caches[board]
 
     def load_json(self, board: str):
-        return [
-            war for war in load_wars(board)
-            if war.get("status") in ("open", "matched")
-        ]
+        wars = []
+        for war in load_wars(board):
+            if war.get("status") not in ("open", "matched"):
+                continue
+            party_id = war.get("party_id")
+            if party_id and is_queue_hidden(get_party(str(party_id))):
+                continue
+            wars.append(war)
+        return wars
 
     @listen()
     async def on_startup(self):
@@ -171,6 +177,12 @@ class PostWarBillboard(Extension):
 
     @Task.create(IntervalTrigger(seconds=30))
     async def sync_billboards(self):
+        try:
+            notes = sweep_idle_queue_parties()
+            for note in notes:
+                print(f"🧹 queue idle: {note}")
+        except Exception as exc:
+            print(f"⚠️ queue idle sweep failed: {exc}")
         await self._promote_scheduled_opponent_searches()
         for board in ALL_BOARD_KEYS:
             cache = self._cache_for(board)

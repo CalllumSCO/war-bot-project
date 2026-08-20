@@ -34,6 +34,7 @@ def _embed_color(war: Dict[str, Any]) -> int:
 
 
 def build_war_embed(war: Dict[str, Any]) -> interactions.Embed:
+    from utils.rank_icons import icon_url
     from utils.search_time import format_search_time, opponent_search_unlocked
 
     war_type = war.get("war_type", "RT").upper()
@@ -47,24 +48,30 @@ def build_war_embed(war: Dict[str, Any]) -> interactions.Embed:
         search_time,
         created_at=war.get("created_at") or war.get("last_updated"),
     )
+    ranked_opponents = mode != MODE_CASUAL and search_mode == SEARCH_OPPONENTS
+
+    if ranked_opponents and status != "matched":
+        title = f"{war_type} · Ranked"
+    else:
+        title = f"{war.get('team_name', 'Unknown Team')} — {war_type} · {mode.title()}"
 
     embed = interactions.Embed(
-        title=f"{war.get('team_name', 'Unknown Team')} — {war_type} · {mode.title()}",
+        title=title,
         description=f"**{label}**",
         color=_embed_color(war),
     )
 
-    embed.add_field(
-        name="Search time",
-        value=format_search_time(search_time),
-        inline=True,
-    )
-
-    embed.add_field(
-        name="Roster",
-        value=roster_summary(lineup),
-        inline=False,
-    )
+    if not ranked_opponents or status == "matched":
+        embed.add_field(
+            name="Search time",
+            value=format_search_time(search_time),
+            inline=True,
+        )
+        embed.add_field(
+            name="Roster",
+            value=roster_summary(lineup),
+            inline=False,
+        )
 
     if mode == MODE_CASUAL:
         embed.add_field(
@@ -78,6 +85,36 @@ def build_war_embed(war: Dict[str, Any]) -> interactions.Embed:
             value=format_average_rank(lineup, war_type),
             inline=False,
         )
+        if ranked_opponents and status != "matched":
+            from utils.sr import get_player_rating, rank_for_sr
+
+            scores = []
+            for entry in lineup or []:
+                did = entry.get("discord_id")
+                if did is None:
+                    continue
+                try:
+                    rating = get_player_rating(
+                        int(did),
+                        war_type,
+                        bagger=bool(
+                            entry.get("bagger")
+                            or str(entry.get("role") or "").lower() == "bagger"
+                        ),
+                        role=entry.get("role"),
+                    )
+                    if rating.get("sr") is not None:
+                        scores.append(int(rating["sr"]))
+                except Exception:
+                    continue
+            rank_key = (
+                rank_for_sr(int(round(sum(scores) / len(scores))), revealed=True)
+                if scores
+                else "unranked"
+            )
+            thumb = icon_url(rank_key)
+            if thumb:
+                embed.set_thumbnail(thumb)
 
     matched = war.get("matched_opponent")
     if matched and status == "matched":
@@ -504,24 +541,67 @@ def build_profile_embed(
 
 
 def build_match_request_embed(requester_war: Dict[str, Any]) -> interactions.Embed:
+    from utils.rank_icons import icon_url
+
     mode = requester_war.get("mode", "ranked")
     lineup = requester_war.get("lineup", [])
-    embed = interactions.Embed(
-        title=f"⚔️ Match request — {requester_war.get('team_name', 'Unknown Team')}",
-        description=(
-            f"**{requester_war.get('team_name')}** wants to war your team.\n"
-            f"**Track:** {requester_war.get('war_type', 'RT')} · **Mode:** {mode.title()}\n"
-            f"**Search time:** `{requester_war.get('start_time', 'ASAP')}`"
-        ),
-        color=COLORS["opponents"],
-    )
-    if mode == MODE_CASUAL:
-        embed.add_field(name="👥 Their lineup", value=format_lineup(lineup), inline=False)
-    else:
+    war_type = requester_war.get("war_type", "RT")
+    ranked = mode != MODE_CASUAL
+
+    if ranked:
+        embed = interactions.Embed(
+            title="Match request",
+            description=(
+                f"A ranked team wants to war you.\n"
+                f"**Track:** {war_type} · **Mode:** Ranked\n"
+                f"**Search time:** `{requester_war.get('start_time', 'ASAP')}`"
+            ),
+            color=COLORS["opponents"],
+        )
         embed.add_field(
-            name="📊 Their team rank",
-            value=format_average_rank(lineup, requester_war.get("war_type", "RT")),
+            name="Their team rank",
+            value=format_average_rank(lineup, war_type),
             inline=False,
         )
+        # Thumbnail matches web icon-only opponent cards.
+        from utils.sr import get_player_rating, rank_for_sr
+
+        scores = []
+        for entry in lineup or []:
+            did = entry.get("discord_id")
+            if did is None:
+                continue
+            try:
+                rating = get_player_rating(
+                    int(did),
+                    war_type,
+                    bagger=bool(
+                        entry.get("bagger") or str(entry.get("role") or "").lower() == "bagger"
+                    ),
+                    role=entry.get("role"),
+                )
+                if rating.get("sr") is not None:
+                    scores.append(int(rating["sr"]))
+            except Exception:
+                continue
+        rank_key = (
+            rank_for_sr(int(round(sum(scores) / len(scores))), revealed=True)
+            if scores
+            else "unranked"
+        )
+        thumb = icon_url(rank_key)
+        if thumb:
+            embed.set_thumbnail(thumb)
+    else:
+        embed = interactions.Embed(
+            title=f"Match request — {requester_war.get('team_name', 'Unknown Team')}",
+            description=(
+                f"**{requester_war.get('team_name')}** wants to war your team.\n"
+                f"**Track:** {war_type} · **Mode:** {mode.title()}\n"
+                f"**Search time:** `{requester_war.get('start_time', 'ASAP')}`"
+            ),
+            color=COLORS["opponents"],
+        )
+        embed.add_field(name="Their lineup", value=format_lineup(lineup), inline=False)
     embed.set_footer(text="War Bot · Accept or decline below")
     return embed

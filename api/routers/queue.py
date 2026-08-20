@@ -36,16 +36,22 @@ from domain.match import (
 from domain.queue import (
     cancel_party,
     filling_surface,
+    finalize_roster_change,
     get_active_party_for_user,
     get_party,
     get_party_by_invite,
+    ensure_opponent_hub_post,
+    is_queue_hidden,
     join_party_queue,
     leave_party_queue,
     list_parties,
     party_as_available_war,
     post_party_to_billboard,
+    recover_stale_matched_party,
     remove_player_from_party,
     sync_party_lineup_from_post,
+    touch_roster_change,
+    unhide_party_queue,
     upsert_party,
 )
 from utils.match_service import board_for_party
@@ -180,6 +186,8 @@ def _enrich_party(party: dict[str, Any] | None) -> dict[str, Any] | None:
     enriched["lineup"] = _batch_enrich_lineup(lineup, war_type)
     enriched["filling_surface"] = filling_surface(party=party)
     enriched["lobby_mode"] = party.get("lobby_mode")
+    enriched["queue_hidden"] = bool(party.get("queue_hidden"))
+    enriched["hidden_at"] = party.get("hidden_at")
     avg_sr = _lineup_avg_sr(enriched["lineup"], war_type, prefer_enriched=True)
     enriched["team_avg_sr"] = avg_sr
     if avg_sr is not None:
@@ -393,6 +401,8 @@ class PartyCreate(BaseModel):
 @router.get("/me/group")
 def get_my_group(user: CurrentUser = Depends(get_current_user)) -> dict[str, Any]:
     party = get_active_party_for_user(user.discord_id)
+    if party:
+        party = recover_stale_matched_party(party)
     inbound = [_enrich_inbound_invite(inv) for inv in list_inbound_invites(user.discord_id)]
     outbound = list_outbound_invites(party["party_id"]) if party else []
     from utils.pending_outbound import build_inbound_pending, build_outbound_pending
@@ -407,12 +417,23 @@ def get_my_group(user: CurrentUser = Depends(get_current_user)) -> dict[str, Any
         user_discord_id=user.discord_id,
         enrich_lineup_entry=_enrich_lineup_entry,
     )
+    from utils.match_session_store import get_session_for_user
+
+    active_session = get_session_for_user(user.discord_id)
+    active_match = None
+    if active_session and active_session.get("session_id"):
+        active_match = {
+            "session_id": active_session.get("session_id"),
+            "team_a_name": active_session.get("team_a_name"),
+            "team_b_name": active_session.get("team_b_name"),
+        }
     return {
         "party": _enrich_party(party),
         "inbound_invites": inbound,
         "outbound_invites": outbound,
         "outbound_pending": outbound_pending,
         "inbound_pending": inbound_pending,
+        "active_match": active_match,
     }
 
 
@@ -578,7 +599,10 @@ def leave_party(
         cancel_party(party_id)
     else:
         party["lineup"] = new_lineup
+        was_hidden = bool(party.get("queue_hidden"))
+        party = touch_roster_change(party)
         upsert_party(party)
+        party = finalize_roster_change(party, was_hidden=was_hidden)
         _resync_billboard_from_party(party)
 
     # Clear any leftover party still tied to this user (stale solo / desynced captain).
@@ -630,6 +654,7 @@ def join_queue_endpoint(
     if not _is_captain(party, user.discord_id):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Only the captain can join the queue.")
 
+    party = recover_stale_matched_party(party)
     updated, message = join_party_queue(party)
     if not updated:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, message or "Could not join the queue.")
@@ -659,6 +684,27 @@ def leave_queue_endpoint(
         "party": _enrich_party(get_party(party_id)),
         "message": message,
     }
+
+
+@router.post("/parties/{party_id}/unhide-queue")
+def unhide_queue_endpoint(
+    party_id: str, user: CurrentUser = Depends(require_linked_fc)
+) -> dict[str, Any]:
+    """Restore visibility after idle soft-hide."""
+    party = get_party(party_id)
+    if not party:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Party not found.")
+    if not _is_captain(party, user.discord_id):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "Only the captain can restore queue visibility."
+        )
+
+    updated, message = unhide_party_queue(party)
+    if not updated:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, message or "Could not restore queue visibility."
+        )
+    return {"party": _enrich_party(get_party(party_id)), "message": message}
 
 
 @router.post("/parties/{party_id}/post")
@@ -808,6 +854,8 @@ def available_allies(
             return
         if party_id and party_id in seen_party_ids:
             return
+        if party_id and is_queue_hidden(get_party(str(party_id))):
+            return
         other = war.get("lineup", [])
         if viewer_lineup and not queue_spy:
             war_id = str(war.get("war_id") or "")
@@ -833,6 +881,8 @@ def available_allies(
     # Web-queued parties that have not (yet) been posted to the Discord allies billboard.
     for party in list_parties():
         if party.get("status") != PARTY_POSTED:
+            continue
+        if is_queue_hidden(party):
             continue
         if (party.get("search_mode") or SEARCH_ALLIES) != SEARCH_ALLIES:
             continue
@@ -938,8 +988,16 @@ def available_opponents(
             return []
 
     results = []
+    viewer_party_id = (viewer or {}).get("party_id")
     for war in load_wars(board):
         if war.get("status") != "open" or war.get("search_mode") != SEARCH_OPPONENTS:
+            continue
+        if _ids_equal(war.get("author_discord_id"), user.discord_id):
+            continue
+        if viewer_party_id and war.get("party_id") == viewer_party_id:
+            continue
+        party_id = war.get("party_id")
+        if party_id and is_queue_hidden(get_party(str(party_id))):
             continue
         lineup = war.get("lineup", [])
         if not can_seek_opponents(lineup):
@@ -1094,10 +1152,22 @@ def create_match_request_endpoint(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "This team is still looking for allies, not opponents.")
     if not can_seek_opponents(target_war.get("lineup", [])):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "This team does not have a confirmed 5/5 lineup yet.")
-    if target_war.get("author_discord_id") == user.discord_id:
+    if _ids_equal(target_war.get("author_discord_id"), user.discord_id):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "You cannot request your own war.")
 
-    requester_war = find_war_by_author(board, user.discord_id)
+    party = get_active_party_for_user(user.discord_id)
+    requester_war = None
+    if (
+        party
+        and _is_captain(party, user.discord_id)
+        and party.get("status") == PARTY_POSTED
+        and can_seek_opponents(party.get("lineup", []))
+    ):
+        requester_war, ensure_error = ensure_opponent_hub_post(party)
+        if ensure_error:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, ensure_error)
+    if not requester_war:
+        requester_war = find_war_by_author(board, user.discord_id)
     if not requester_war:
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST,
@@ -1111,9 +1181,32 @@ def create_match_request_endpoint(
             "Your roster must be 5/5 with at least 1 bagger to request a match.",
         )
 
+    # Web challenges should show the captain's companion identity, not a stale Discord team name.
+    web_label = f"{user.display_name}'s Team"
+    requester_war["team_name"] = web_label
+    upsert_war(board, requester_war)
+    if party:
+        party["team_name"] = web_label
+        upsert_party(party)
+
     request, error = start_match_request(board, target_war["war_id"], requester_war["war_id"])
     if error:
         raise HTTPException(status.HTTP_409_CONFLICT, error)
+
+    from utils.event_bus import publish_event
+
+    publish_event(
+        "match_request",
+        {
+            "request_id": request["request_id"],
+            "board": board,
+            "target_war_id": target_war.get("war_id"),
+            "requester_war_id": requester_war.get("war_id"),
+            "origin_guild_id": target_war.get("origin_guild_id"),
+            "captain_discord_id": target_war.get("author_discord_id"),
+            "team_name": target_war.get("team_name"),
+        },
+    )
     return request
 
 
@@ -1195,7 +1288,11 @@ def _accept_ally_request(request: dict[str, Any], user: CurrentUser) -> dict[str
     if party_id:
         party = get_party(party_id)
         if party:
-            upsert_party(sync_party_lineup_from_post(party, war))
+            synced = sync_party_lineup_from_post(party, war)
+            was_hidden = bool(synced.get("queue_hidden"))
+            touch_roster_change(synced)
+            upsert_party(synced)
+            finalize_roster_change(synced, was_hidden=was_hidden)
 
     request["status"] = "accepted"
     upsert_ally_request(request)
@@ -1349,7 +1446,10 @@ def _accept_party_invite(invite: dict[str, Any], user: CurrentUser) -> dict[str,
             ).to_dict()
         )
         party_a["lineup"] = lineup
+        was_hidden = bool(party_a.get("queue_hidden"))
+        touch_roster_change(party_a)
         upsert_party(party_a)
+        finalize_roster_change(party_a, was_hidden=was_hidden)
         _resync_billboard_from_party(party_a)
 
         from utils.pending_outbound import (
@@ -1401,7 +1501,10 @@ def _accept_party_invite(invite: dict[str, Any], user: CurrentUser) -> dict[str,
         )
 
     survivor["lineup"] = combined_lineup
+    was_hidden = bool(survivor.get("queue_hidden"))
+    touch_roster_change(survivor)
     upsert_party(survivor)
+    finalize_roster_change(survivor, was_hidden=was_hidden)
     cancel_party(absorbed["party_id"])
     _resync_billboard_from_party(survivor)
 

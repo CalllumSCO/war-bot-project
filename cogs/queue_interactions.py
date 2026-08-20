@@ -5,7 +5,15 @@ from interactions import ComponentContext, Extension, component_callback
 
 from classes.player import Player
 from domain.match import board_for_party
-from domain.queue import cancel_party, get_party, post_party_to_billboard, sync_billboard_post_from_party, upsert_party
+from domain.queue import (
+    cancel_party,
+    finalize_roster_change,
+    get_party,
+    post_party_to_billboard,
+    sync_billboard_post_from_party,
+    touch_roster_change,
+    upsert_party,
+)
 from domain.roster import PARTY_PREPARING, is_roster_full, team_queue_lobby_active
 from utils.billboard_refresh import refresh_war_billboard_posts
 from utils.lineup_lock import find_blocking_lineup, lineup_lock_message
@@ -88,7 +96,10 @@ class QueueInteractions(Extension):
             ).to_dict()
         )
         party["lineup"] = lineup
+        was_hidden = bool(party.get("queue_hidden"))
+        party = touch_roster_change(party)
         upsert_party(party)
+        party = finalize_roster_change(party, was_hidden=was_hidden)
 
         from utils.pending_outbound import (
             clear_outbound_pending_for_party,
@@ -127,7 +138,10 @@ class QueueInteractions(Extension):
         await _defer_ephemeral(ctx)
 
         party["lineup"] = lineup
+        was_hidden = bool(party.get("queue_hidden"))
+        party = touch_roster_change(party)
         upsert_party(party)
+        party = finalize_roster_change(party, was_hidden=was_hidden)
         if party.get("status") != PARTY_PREPARING:
             synced = sync_billboard_post_from_party(party)
             if synced:

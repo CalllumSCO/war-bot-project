@@ -123,9 +123,16 @@ def find_war(board: str, war_id: str) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _ids_equal(left: Any, right: Any) -> bool:
+    try:
+        return int(left) == int(right)
+    except (TypeError, ValueError):
+        return left == right and left is not None
+
+
 def find_war_by_author(board: str, author_discord_id: int) -> Optional[Dict[str, Any]]:
     for war in load_wars(board):
-        if war.get("author_discord_id") == author_discord_id and war.get("status", "open") == "open":
+        if _ids_equal(war.get("author_discord_id"), author_discord_id) and war.get("status", "open") == "open":
             return war
     return None
 

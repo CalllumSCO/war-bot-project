@@ -22,7 +22,15 @@ from domain.match import (
     upsert_ally_request,
     upsert_match_request,
 )
-from domain.queue import delete_party, get_party, remove_player_from_party, sync_party_lineup_from_post, upsert_party
+from domain.queue import (
+    delete_party,
+    finalize_roster_change,
+    get_party,
+    remove_player_from_party,
+    sync_party_lineup_from_post,
+    touch_roster_change,
+    upsert_party,
+)
 from domain.roster import (
     SEARCH_ALLIES,
     SEARCH_OPPONENTS,
@@ -106,8 +114,23 @@ def _sync_party_from_war(war: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     party = get_party(party_id)
     if not party:
         return None
+    old_ids = {
+        int(p.get("discord_id") or 0)
+        for p in (party.get("lineup") or [])
+        if p.get("discord_id") is not None
+    }
     party = sync_party_lineup_from_post(party, war)
+    new_ids = {
+        int(p.get("discord_id") or 0)
+        for p in (party.get("lineup") or [])
+        if p.get("discord_id") is not None
+    }
+    was_hidden = bool(party.get("queue_hidden"))
+    if old_ids != new_ids:
+        party = touch_roster_change(party)
     upsert_party(party)
+    if old_ids != new_ids:
+        party = finalize_roster_change(party, was_hidden=was_hidden)
     return party
 
 
@@ -624,8 +647,14 @@ class WarInteractions(Extension):
                 ),
             )
         ]
+        ranked = (requester_war.get("mode") or "ranked") != "casual"
+        ping = (
+            f"<@{target_war['author_discord_id']}> — a ranked team requested a match!"
+            if ranked
+            else f"<@{target_war['author_discord_id']}> — **{requester_war.get('team_name')}** requested a match!"
+        )
         msg = await channel.send(
-            content=f"<@{target_war['author_discord_id']}> — **{requester_war.get('team_name')}** requested a match!",
+            content=ping,
             embeds=build_match_request_embed(requester_war),
             components=components,
         )

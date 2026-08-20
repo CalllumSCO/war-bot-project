@@ -26,7 +26,8 @@ def normalize_rxx(raw: str) -> Optional[str]:
         return None
     if text.startswith("r"):
         text = text[1:]
-    if not text.isdigit() or not (4 <= len(text) <= 6):
+    # Lounge RXX codes are numeric; length varies (often 5–8 digits).
+    if not text.isdigit() or not (4 <= len(text) <= 10):
         return None
     return f"r{text}"
 

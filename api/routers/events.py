@@ -101,7 +101,7 @@ async def stream_events(request: Request, user: CurrentUser = Depends(get_curren
                     yield _sse(event_type, payload)
                     # Also fan out a generic queue bump so the web board refreshes
                     # even when the client only listens for `queue`.
-                    if event_type in ("party_sync", "queue", "hub"):
+                    if event_type in ("party_sync", "queue", "hub", "match_confirmed"):
                         yield _sse("queue", {"source": event_type, "payload": payload})
             except Exception as exc:
                 print(f"⚠️ event_bus poll failed: {exc}")

@@ -162,6 +162,7 @@ if __name__ == "__main__":
     bot.load_extension("cogs.match_relay")
     bot.load_extension("cogs.chat_bridge")
     bot.load_extension("cogs.ally_request_bridge")
+    bot.load_extension("cogs.match_request_bridge")
     bot.load_extension("cogs.party_sync_bridge")
     bot.load_extension("cogs.ally_join")
     bot.load_extension("cogs.submit_pen")

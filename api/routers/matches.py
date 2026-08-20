@@ -113,7 +113,34 @@ def get_match(session_id: str, user: CurrentUser = Depends(get_current_user)) ->
     if not session:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Match session not found.")
     _require_participant(session, user)
-    return _enrich_match_session(session)
+    out = _enrich_match_session(session)
+    try:
+        your_war, _opp = _user_war(session, user)
+        out["is_captain"] = int(your_war.get("author_discord_id") or 0) == int(user.discord_id)
+        from utils.war_completion_store import find_pending_for_war
+        from utils.wiimmfi import build_score_entry_instructions
+        from utils.billboard_store import find_war_across_boards
+
+        pending = find_pending_for_war(str(your_war.get("war_id") or ""))
+        if pending and pending.get("status") in ("collecting_scores", "pending_confirmation"):
+            scores = pending.get("team_scores") or {}
+            winner_name = pending.get("reporter_team_name")
+            winner_found = find_war_across_boards(str(pending.get("winner_war_id") or ""))
+            if winner_found:
+                winner_name = winner_found[1].get("team_name") or winner_name
+            out["completion_pending"] = {
+                "status": pending.get("status"),
+                "manual_fallback": bool(pending.get("manual_fallback")),
+                "point_margin": pending.get("point_margin"),
+                "reporter_team_name": pending.get("reporter_team_name"),
+                "winner_team_name": winner_name,
+                "your_team_submitted": str(your_war.get("war_id")) in scores,
+                "score_instructions": build_score_entry_instructions(your_war.get("lineup", [])),
+                "fallback_reason": pending.get("fallback_reason"),
+            }
+    except HTTPException:
+        out["is_captain"] = False
+    return out
 
 
 class MatchInfoUpdate(BaseModel):

@@ -248,6 +248,38 @@ export default function MatchClient({ sessionId }: { sessionId: string }) {
         </p>
       )}
 
+      {session.completionPending && (
+        <div className="mb-4 space-y-2 rounded-xl border border-accent/30 bg-accent/5 px-4 py-3 text-sm">
+          {session.completionPending.status === "collecting_scores" ? (
+            <>
+              <p className="text-fg">
+                <span className="font-medium">{session.completionPending.reporter_team_name}</span>{" "}
+                reported{" "}
+                <span className="font-medium">{session.completionPending.winner_team_name}</span> won
+                by {session.completionPending.point_margin} pts.
+                {session.completionPending.manual_fallback
+                  ? " RXX auto-load failed — enter scores manually (Discord: `/war scores`)."
+                  : ""}
+              </p>
+              {session.completionPending.score_instructions && (
+                <p className="whitespace-pre-wrap text-muted">
+                  {session.completionPending.score_instructions}
+                </p>
+              )}
+              {session.completionPending.your_team_submitted ? (
+                <p className="text-muted">Your team&apos;s scores are in — waiting for the opponent.</p>
+              ) : session.isCaptain ? (
+                <p className="text-muted">Captain: submit your team&apos;s scores below or use Discord.</p>
+              ) : null}
+            </>
+          ) : (
+            <p className="text-fg">
+              Result ready — both captains must confirm (Discord: `/war confirm`).
+            </p>
+          )}
+        </div>
+      )}
+
       {cancel?.pending && (
         <div className="mb-4 rounded-xl border border-danger/40 bg-danger/5 px-4 py-3 text-sm">
           {cancel.youRequested ? (
@@ -387,7 +419,7 @@ export default function MatchClient({ sessionId }: { sessionId: string }) {
                 />
               </label>
               <label className="block text-xs text-muted">
-                Scores (optional fallback — space separated)
+                Scores (optional fallback — space separated, runners then bagger then penalties)
                 <input
                   value={scores}
                   onChange={(e) => setScores(e.target.value)}
@@ -395,6 +427,11 @@ export default function MatchClient({ sessionId }: { sessionId: string }) {
                   className="mt-1 w-full rounded-lg border border-border bg-bg px-3 py-2 text-sm text-fg"
                 />
               </label>
+              {session.completionPending?.score_instructions && (
+                <p className="whitespace-pre-wrap text-xs text-muted">
+                  {session.completionPending.score_instructions}
+                </p>
+              )}
               <button
                 type="button"
                 disabled={actionBusy || !margin.trim() || !rxx.trim()}

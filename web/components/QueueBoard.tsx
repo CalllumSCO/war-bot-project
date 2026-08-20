@@ -7,6 +7,7 @@ import {
   createMatchRequest,
   createParty,
   getQueueState,
+  getMyActiveMatch,
   inviteEntry,
   joinQueue,
   leaveGroup,
@@ -14,6 +15,7 @@ import {
   postToAlliesBillboard,
   requestAlly,
   respondToInvitation,
+  restoreQueueVisibility,
   subscribeEvents,
   undoInvite,
   updateParty,
@@ -181,6 +183,13 @@ export default function QueueBoard() {
       try {
         const state = await getQueueState();
         if (!mountedRef.current) return;
+        const sessionId =
+          state.activeMatch?.sessionId ??
+          (await getMyActiveMatch().catch(() => null))?.session_id;
+        if (sessionId) {
+          router.push(`/match/${sessionId}`);
+          return;
+        }
         lastFetchAtRef.current = Date.now();
         setData(state);
         setError(null);
@@ -225,9 +234,15 @@ export default function QueueBoard() {
     startPoll(POLL_INTERVAL_MS);
 
     const unsub = subscribeEvents(
-      (eventType) => {
-        // Ignore connect handshake + match chat; refresh for queue/party/hub bumps.
+      (eventType, payload) => {
         if (eventType === "connected" || eventType === "chat") return;
+        if (eventType === "match_confirmed") {
+          const body = payload as { session_id?: string };
+          if (body?.session_id) {
+            router.push(`/match/${body.session_id}`);
+            return;
+          }
+        }
         scheduleFetch(false, SSE_DEBOUNCE_MS);
       },
       () => {
@@ -313,7 +328,9 @@ export default function QueueBoard() {
       await fetchState(false);
     } catch (err) {
       if (entry.kind === "opponents") {
-        setError("Couldn't send that challenge. Try again.");
+        const detail =
+          err instanceof ApiError ? String(err.message || "").replace(/\*\*/g, "").trim() : "";
+        setError(detail || "Couldn't send that challenge. Try again.");
       } else if (entry.action === "request_join") {
         const detail =
           err instanceof ApiError
@@ -428,6 +445,26 @@ export default function QueueBoard() {
           >
             Retry
           </button>
+        </div>
+      )}
+
+      {data?.myGroup?.queueHidden && (
+        <div className="mb-4 rounded-lg border border-accent/30 bg-accent/10 px-4 py-2.5 text-sm text-fg">
+          You&apos;ve been hidden due to inactivity. Click{" "}
+          <button
+            type="button"
+            disabled={queueActionBusy || !data.myGroup.isCaptain}
+            onClick={() =>
+              runQueueAction(() => restoreQueueVisibility(data.myGroup?.partyId))
+            }
+            className="font-semibold text-accent underline underline-offset-2 transition hover:text-accent-hover disabled:opacity-50"
+          >
+            here
+          </button>{" "}
+          to rejoin the queue.
+          {!data.myGroup.isCaptain && (
+            <span className="text-muted"> (Only the captain can restore.)</span>
+          )}
         </div>
       )}
 

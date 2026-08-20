@@ -85,11 +85,9 @@ def opponent_war(board: str, war: dict) -> Optional[dict]:
 
 
 async def send_to_guild_war_channel(bot, session: dict, guild_id: int, content: str) -> None:
-    channel_id = None
-    if session.get("guild_a_id") == guild_id:
-        channel_id = session.get("channel_a_id")
-    elif session.get("guild_b_id") == guild_id:
-        channel_id = session.get("channel_b_id")
+    from utils.war_completion import _war_channel_for_guild
+
+    channel_id = _war_channel_for_guild(session, guild_id)
     if not channel_id:
         return
     try:
@@ -192,9 +190,9 @@ async def handle_complete(
         ShortText(
             label="RXX room code",
             custom_id="rxx",
-            placeholder="r12345",
+            placeholder="r11787235",
             required=True,
-            max_length=8,
+            max_length=12,
         ),
         title="Complete match",
     )
@@ -210,7 +208,7 @@ async def handle_complete(
     loser_war = opp if reporter_won else war
     rxx = normalize_rxx(m_ctx.kwargs.get("rxx", ""))
     if not rxx:
-        await m_ctx.send("A valid **RXX** room code is required (e.g. `r12345`).", ephemeral=True)
+        await m_ctx.send("A valid **RXX** room code is required (e.g. `r12345` or `r11787235`).", ephemeral=True)
         return
 
     table_ref, rxx_error = await build_scores_from_rxx(rxx, winner_war, loser_war, margin)
@@ -251,14 +249,29 @@ async def handle_complete(
         manual_fallback=True,
         fallback_reason=rxx_error,
     )
-    fallback_note = (
-        f"⚠️ Could not load scores from **`{rxx}`** — {rxx_error}\n"
-        "**Manual fallback:** each captain must `/war scores` in their war channel."
+    await notify_teams_for_score_collection(
+        bot,
+        pending,
+        war,
+        opp,
+        winner_war.get("team_name"),
+        session,
+        rxx=rxx,
+        rxx_error=rxx_error,
     )
-    for guild_id in (pending.get("reporter_guild_id"), pending.get("opponent_guild_id")):
-        await send_to_guild_war_channel(bot, session, guild_id, fallback_note)
+    from utils.event_bus import publish_event
+
+    publish_event(
+        "match_completion",
+        {
+            "session_id": session.get("session_id"),
+            "status": "collecting_scores",
+            "manual_fallback": True,
+        },
+    )
     await m_ctx.send(
-        f"RXX lookup failed — manual score entry required.\n{fallback_note}",
+        f"RXX lookup failed — manual score entry required.\n"
+        f"Both captains must `/war scores`. Winner: **{winner_war.get('team_name')}** · Margin: `{margin}`.",
         ephemeral=True,
     )
 
@@ -295,6 +308,10 @@ async def handle_submit_scores(bot, ctx) -> None:
         return
 
     instructions = build_score_entry_instructions(war.get("lineup", []))
+    await ctx.send(
+        f"**Score entry order for {war.get('team_name', 'your team')}:**\n{instructions}",
+        ephemeral=True,
+    )
     modal = Modal(
         ParagraphText(
             label="Scores (space separated)",

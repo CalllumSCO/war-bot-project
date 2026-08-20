@@ -104,7 +104,10 @@ async def finalize_war_completion(
         war_id = war.get("war_id")
         if war_id:
             delete_war(board, war_id)
-            await remove_war_from_billboards(bot, board, war_id)
+            try:
+                await remove_war_from_billboards(bot, board, war_id)
+            except Exception as exc:
+                print(f"⚠️ billboard cleanup skipped for {war_id}: {exc}")
 
     for war in (winner_war, loser_war):
         party_id = war.get("party_id")
@@ -125,22 +128,25 @@ async def notify_teams_for_score_collection(
     opponent_war: Dict[str, Any],
     winner_name: str,
     session: Dict[str, Any],
+    *,
+    rxx: Optional[str] = None,
+    rxx_error: Optional[str] = None,
 ) -> None:
     from utils.wiimmfi import build_score_entry_instructions
 
+    prefix = ""
+    if rxx and rxx_error:
+        prefix = f"⚠️ Could not auto-load scores from **`{rxx}`** — {rxx_error}\n\n"
+
     header = (
-        f"**{pending['reporter_team_name']}** started match completion "
-        f"(winner: **{winner_name}**, margin: `{pending['point_margin']}`).\n"
-        "Each **captain** runs `/war scores` in this channel.\n\n"
+        f"{prefix}"
+        f"**{pending['reporter_team_name']}** reported: **{winner_name}** won by "
+        f"`{pending['point_margin']}` points.\n"
+        "Each **captain** runs `/war scores` in their war channel.\n\n"
     )
 
     for war in (reporter_war, opponent_war):
-        guild_id = war.get("origin_guild_id")
-        channel_id = None
-        if session.get("guild_a_id") == guild_id:
-            channel_id = session.get("channel_a_id")
-        elif session.get("guild_b_id") == guild_id:
-            channel_id = session.get("channel_b_id")
+        channel_id = _war_channel_for_guild(session, war.get("origin_guild_id"))
         if not channel_id:
             continue
         try:
@@ -153,12 +159,41 @@ async def notify_teams_for_score_collection(
             print(f"❌ Failed to request scores in war channel {channel_id}: {exc}")
 
 
-def _war_channel_for_guild(session: Dict[str, Any], guild_id: int) -> Optional[int]:
-    if session.get("guild_a_id") == guild_id:
+def _guild_ids_equal(a: Any, b: Any) -> bool:
+    try:
+        return int(a or 0) == int(b or 0)
+    except (TypeError, ValueError):
+        return False
+
+
+def _war_channel_for_guild(session: Dict[str, Any], guild_id: Any) -> Optional[int]:
+    if _guild_ids_equal(session.get("guild_a_id"), guild_id):
         return session.get("channel_a_id")
-    if session.get("guild_b_id") == guild_id:
+    if _guild_ids_equal(session.get("guild_b_id"), guild_id):
         return session.get("channel_b_id")
     return None
+
+
+async def broadcast_to_session_channels(
+    bot: interactions.Client,
+    session: Dict[str, Any],
+    content: str,
+) -> None:
+    """Post to every war comm channel that exists for this match."""
+    seen: set[int] = set()
+    for channel_id in (session.get("channel_a_id"), session.get("channel_b_id")):
+        try:
+            cid = int(channel_id or 0)
+        except (TypeError, ValueError):
+            continue
+        if not cid or cid in seen:
+            continue
+        seen.add(cid)
+        try:
+            channel = await bot.fetch_channel(cid)
+            await channel.send(content)
+        except Exception as exc:
+            print(f"❌ Failed to broadcast to war channel {cid}: {exc}")
 
 
 async def notify_teams_for_confirmation(

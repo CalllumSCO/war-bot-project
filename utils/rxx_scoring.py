@@ -121,7 +121,19 @@ async def build_scores_from_rxx(
     Returns (table_reference, error_message).
     """
     try:
-        room = await fetch_room_by_rxx(rxx)
+        roster_ids: List[int] = []
+        for war in (winner_war, loser_war):
+            for player in war.get("lineup", []) or []:
+                raw = player.get("discord_id")
+                if raw is None:
+                    continue
+                try:
+                    did = int(raw)
+                except (TypeError, ValueError):
+                    continue
+                if did not in roster_ids:
+                    roster_ids.append(did)
+        room = await fetch_room_by_rxx(rxx, discord_ids=roster_ids or None)
     except LoungeAPIError as exc:
         return None, str(exc)
 

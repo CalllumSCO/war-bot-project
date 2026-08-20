@@ -155,18 +155,23 @@ async def fetch_host_friend_codes(guild_id: int, discord_ids: List[int]) -> List
     return data.get("results") or []
 
 
-async def fetch_room_by_rxx(rxx: str) -> Dict[str, Any]:
+async def fetch_room_by_rxx(
+    rxx: str,
+    *,
+    discord_ids: Optional[List[int]] = None,
+) -> Dict[str, Any]:
     """
     Fetch WiimmFI room data for an RXX code via Lounge API.
-    Expected: results with player rows containing at least `fc` and `score`.
+    Lounge requires a player filter alongside rxx — we pass `all=1`, optionally roster discord IDs.
     """
-    data = await _get_json(
-        WIIMMFI_ENDPOINT,
-        {
-            "code": _require_api_key(),
-            "rxx": rxx,
-        },
-    )
+    params: Dict[str, Any] = {
+        "code": _require_api_key(),
+        "rxx": rxx,
+        "all": "1",
+    }
+    if discord_ids:
+        params["discord_user_ids"] = _comma_join(discord_ids)
+    data = await _get_json(WIIMMFI_ENDPOINT, params)
     results = data.get("results")
     if isinstance(results, list) and results:
         if len(results) == 1 and isinstance(results[0], dict) and results[0].get("players"):

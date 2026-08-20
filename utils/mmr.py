@@ -126,4 +126,33 @@ def apply_ranked_war_mmr(
 
 
 def format_average_rank(lineup: List[Dict[str, Any]], war_type: str = "RT") -> str:
-    return f"`{average_team_mmr(lineup, war_type):,}` SR (team avg)"
+    """Discord-facing team rank: TrueSkill tier + emoji (matches web opponent cards)."""
+    from utils.rank_icons import emoji_mention
+    from utils.sr import get_player_rating, rank_for_sr, tier_label
+
+    scores: List[int] = []
+    for entry in lineup or []:
+        did = entry.get("discord_id")
+        if did is None:
+            continue
+        try:
+            rating = get_player_rating(
+                int(did),
+                war_type,
+                bagger=bool(entry.get("bagger") or str(entry.get("role") or "").lower() == "bagger"),
+                role=entry.get("role"),
+            )
+            if rating.get("sr") is not None:
+                scores.append(int(rating["sr"]))
+        except Exception:
+            continue
+    rank_key = (
+        rank_for_sr(int(round(sum(scores) / len(scores))), revealed=True)
+        if scores
+        else "unranked"
+    )
+    emoji = emoji_mention(rank_key)
+    label = tier_label(rank_key)
+    if emoji:
+        return f"{emoji} **{label}**"
+    return f"**{label}**"

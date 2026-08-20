@@ -55,6 +55,9 @@ class QueueParty:
         now = datetime.now().isoformat()
         self.created_at = created_at or now
         self.last_updated = last_updated or now
+        self.last_roster_change_at = now
+        self.queue_hidden = False
+        self.hidden_at = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -75,6 +78,9 @@ class QueueParty:
             "search_mode": self.search_mode,
             "created_at": self.created_at,
             "last_updated": self.last_updated,
+            "last_roster_change_at": getattr(self, "last_roster_change_at", None) or self.created_at,
+            "queue_hidden": bool(getattr(self, "queue_hidden", False)),
+            "hidden_at": getattr(self, "hidden_at", None),
         }
 
     @classmethod
@@ -99,3 +105,9 @@ class QueueParty:
             last_updated=data.get("last_updated"),
             created_at=data.get("created_at") or data.get("last_updated"),
         )
+        inst.last_roster_change_at = (
+            data.get("last_roster_change_at") or inst.created_at
+        )
+        inst.queue_hidden = bool(data.get("queue_hidden"))
+        inst.hidden_at = data.get("hidden_at")
+        return inst
