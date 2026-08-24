@@ -196,6 +196,9 @@ def _enrich_party(party: dict[str, Any] | None) -> dict[str, Any] | None:
         enriched["team_avg_rank"] = rank_for_sr(int(avg_sr), revealed=True)
     else:
         enriched["team_avg_rank"] = "unranked"
+    from utils.lineup_sr import enrich_with_lineup_team
+
+    enriched = enrich_with_lineup_team(enriched, lineup, war_type)
     for key in ("captain_discord_id", "guild_id"):
         if enriched.get(key) is not None:
             try:
@@ -272,15 +275,42 @@ def _redact_for_queue_spy(war: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _apply_casual_lineup_card_rank(
+    enriched: dict[str, Any],
+    lineup: list[dict[str, Any]],
+    war_type: str,
+) -> dict[str, Any]:
+    """Casual boards: prefer revealed lineup team SR over live average snapshot."""
+    from utils.lineup_sr import lineup_display_fields
+    from utils.sr import rank_for_sr
+
+    out = dict(enriched)
+    fields = lineup_display_fields(lineup, war_type)
+    if fields.get("lineup_revealed") and fields.get("lineup_team_sr") is not None:
+        out["team_avg_sr"] = fields["lineup_team_sr"]
+        out["team_avg_rank"] = fields["lineup_team_rank"]
+        out["lineup_seeded"] = True
+    elif out.get("team_avg_sr") is not None:
+        out["team_avg_rank"] = rank_for_sr(int(out["team_avg_sr"]), revealed=True)
+    for key, value in fields.items():
+        if key.startswith("lineup_") or key == "lineup_id":
+            out[key] = value
+    return out
+
+
 def _enrich_war(war: dict[str, Any]) -> dict[str, Any]:
     war_type = war.get("war_type") or "RT"
     enriched = dict(war)
-    enriched["lineup"] = _batch_enrich_lineup(list(war.get("lineup", []) or []), war_type)
+    lineup = list(war.get("lineup", []) or [])
+    enriched["lineup"] = _batch_enrich_lineup(lineup, war_type)
     # Prefer party metadata when linked — more accurate for web vs mixed.
     party = get_party(war["party_id"]) if war.get("party_id") else None
     enriched["filling_surface"] = (
         filling_surface(party=party) if party else filling_surface(war=war)
     )
+    from utils.lineup_sr import enrich_with_lineup_team
+
+    enriched = enrich_with_lineup_team(enriched, lineup, war_type)
     for key in ("author_discord_id", "origin_guild_id", "guild_id"):
         if enriched.get(key) is not None:
             try:
@@ -823,6 +853,10 @@ def available_allies(
     user: CurrentUser = Depends(get_current_user),
 ) -> list[dict[str, Any]]:
     board = _validate_board(board)
+    from utils.boards import parse_board_key
+
+    war_type, board_mode = parse_board_key(board)
+    casual_board = str(board_mode or "").lower() != "ranked"
     viewer = get_active_party_for_user(user.discord_id)
     viewer_lineup = (viewer or {}).get("lineup", []) if viewer else []
     viewer_party_id = (viewer or {}).get("party_id")
@@ -873,6 +907,12 @@ def available_allies(
         enriched = _enrich_war(war)
         if queue_spy:
             enriched = _redact_for_queue_spy(enriched)
+        elif casual_board:
+            enriched = _apply_casual_lineup_card_rank(
+                enriched,
+                war.get("lineup") or [],
+                war.get("war_type") or war_type,
+            )
         results.append(enriched)
 
     for war in load_wars(board):
@@ -1022,13 +1062,15 @@ def available_opponents(
             enriched = _redact_ranked_opponent(enriched, team_avg_sr)
             enriched["delta_vs_you"] = None
         else:
-            from utils.sr import rank_for_sr
+            enriched = _apply_casual_lineup_card_rank(enriched, lineup, war_type)
+            if not enriched.get("lineup_seeded"):
+                from utils.sr import rank_for_sr
 
-            enriched["team_avg_rank"] = (
-                rank_for_sr(int(team_avg_sr), revealed=True)
-                if team_avg_sr is not None
-                else "unranked"
-            )
+                enriched["team_avg_rank"] = (
+                    rank_for_sr(int(team_avg_sr), revealed=True)
+                    if team_avg_sr is not None
+                    else "unranked"
+                )
             enriched["anonymous"] = False
         results.append(enriched)
     return results

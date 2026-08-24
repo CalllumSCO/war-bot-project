@@ -66,6 +66,17 @@ async def finalize_war_completion(
             point_margin,
             war_type=winner_war.get("war_type", "RT"),
         )
+        try:
+            from utils.lineup_sr import apply_ranked_war_lineup_sr
+
+            apply_ranked_war_lineup_sr(
+                winner_lineup,
+                loser_lineup,
+                point_margin,
+                war_type=winner_war.get("war_type", "RT"),
+            )
+        except Exception as exc:
+            print(f"⚠️ lineup team SR update failed: {exc}")
 
     table_reference = table_reference or {}
     result = append_result(

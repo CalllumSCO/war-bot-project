@@ -16,7 +16,7 @@ from typing import Any, Dict, Iterable, List, Optional, Set
 CONFIG_SCHEMA_VERSION = 1
 
 # Bump when build_how_to_use_embeds() content/layout changes.
-HOW_TO_GUIDE_VERSION = 1
+HOW_TO_GUIDE_VERSION = 4
 
 
 @dataclass(frozen=True)

@@ -117,3 +117,18 @@ CREATE TABLE IF NOT EXISTS event_bus (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS event_bus_created_idx ON event_bus (id);
+
+CREATE TABLE IF NOT EXISTS lineup_ratings (
+  lineup_id TEXT PRIMARY KEY,
+  track TEXT NOT NULL,
+  member_ids BIGINT[] NOT NULL,
+  mu DOUBLE PRECISION NOT NULL DEFAULT 25.0,
+  sigma DOUBLE PRECISION NOT NULL DEFAULT 8.333333333333334,
+  games_together INT NOT NULL DEFAULT 0,
+  revealed BOOLEAN NOT NULL DEFAULT FALSE,
+  wins INT NOT NULL DEFAULT 0,
+  losses INT NOT NULL DEFAULT 0,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS lineup_ratings_members_idx ON lineup_ratings USING GIN (member_ids);
+CREATE INDEX IF NOT EXISTS lineup_ratings_track_idx ON lineup_ratings (track);

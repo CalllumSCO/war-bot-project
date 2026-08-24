@@ -95,7 +95,7 @@ export default function NavBar() {
             href="/q/info"
             className="rounded-lg px-3 py-1.5 text-muted transition hover:bg-panel hover:text-fg"
           >
-            How to use
+            Guide
           </Link>
           {loggedIn ? (
             <div className="relative" ref={menuRef}>

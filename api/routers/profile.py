@@ -98,7 +98,7 @@ async def get_my_profile(user: CurrentUser = Depends(get_current_user)) -> dict[
         except Exception:
             pass
         extended = get_extended_profile_fields(user.discord_id)
-    return {
+    payload = {
         "discord_id": str(user.discord_id),
         "username": extended.get("discord_username") or user.username,
         "display_name": extended.get("display_name") or user.display_name,
@@ -118,6 +118,13 @@ async def get_my_profile(user: CurrentUser = Depends(get_current_user)) -> dict[
         "supporter": extended.get("supporter", False),
         "ratings": _ratings_summary(user.discord_id),
     }
+    try:
+        from utils.lineup_sr import lineup_cards_for_profile
+
+        payload["lineup_ratings"] = lineup_cards_for_profile(user.discord_id)
+    except Exception:
+        payload["lineup_ratings"] = []
+    return payload
 
 
 class ProfileUpdate(BaseModel):

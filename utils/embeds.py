@@ -306,29 +306,64 @@ def build_how_to_use_embeds() -> list:
     web_info = f"{web_base}/q/info"
 
     intro = interactions.Embed(
-        title="How to use War Bot",
+        title="War Bot · Guide",
         description=(
             "MKWii **5v5** war matchmaking — Discord + companion web app.\n\n"
-            f"Full web guide (queue + ranked system): **{web_info}**"
+            f"**Full guide (how to queue + ranked info):** {web_info}"
         ),
         color=COLORS["default"],
     )
     intro.add_field(
-        name="Quick start",
+        name="How to queue (Discord)",
         value=(
             "1. Admin: `/team` then `/setup` (and `/config` for preferences)\n"
             "2. Everyone: `/profile link`\n"
-            "3. Captain: `/queue start` → lobby → **Post to Hub** / `/queue post`\n"
-            "4. Hub: **Request Ally** or **Request Match**\n"
-            "5. Finish in `war-vs-*` with `/war complete`"
+            "3. Captain: `/queue start` → fill roster → **Post to Hub** / `/queue post`\n"
+            "4. Hub: **Request Ally** (fill roster) or **Challenge** (full 5v5 LFO)\n"
+            "5. Play in `war-vs-*` → `/war complete`"
         ),
         inline=False,
     )
     intro.add_field(
         name="Companion site",
         value=(
-            f"Queue, invites, and profiles on the web: {web_base}/q\n"
-            f"How to use (web): {web_info}"
+            f"Queue, invites, and profiles: {web_base}/q\n"
+            f"Guide (queue walkthrough + SR / tiers): {web_info}"
+        ),
+        inline=False,
+    )
+
+    ranked = interactions.Embed(
+        title="About ranked · SR & team rank",
+        description=(
+            "Ranked wars update **Scrims Rating (SR)** via TrueSkill — separate per "
+            "**RT/CT** and **runner/bagger**. Finish **5** ranked games in a lane to reveal your tier."
+        ),
+        color=COLORS["opponents"],
+    )
+    ranked.add_field(
+        name="Lineup team SR",
+        value=(
+            "Same **5 core players** (no allies) → shared lineup SR per **RT/CT**.\n"
+            "Revealed after **5** ranked wars together. Ranked LFO stays avg-SR anonymous; "
+            "casual can show seeded lineup tier."
+        ),
+        inline=False,
+    )
+    ranked.add_field(
+        name="Team rank vs lineup SR",
+        value=(
+            "**Team rank** on ranked LFO cards = live average SR snapshot (anonymous).\n"
+            "**Lineup team SR** = stored rating for a specific five — see My Group / profile."
+        ),
+        inline=False,
+    )
+    ranked.add_field(
+        name="What moves SR",
+        value=(
+            "• Only **ranked** wars count\n"
+            "• Win/loss + margin matter; bagger updates are dampened\n"
+            "• Full tier list on the web guide"
         ),
         inline=False,
     )
@@ -383,7 +418,7 @@ def build_how_to_use_embeds() -> list:
         inline=False,
     )
     allies.set_footer(text="War Bot")
-    return [intro, match_chat, group_chat, allies]
+    return [intro, ranked, match_chat, group_chat, allies]
 
 
 def build_how_to_use_embed() -> interactions.Embed:

@@ -10,7 +10,9 @@ from utils.guild_config_schema import HOW_TO_GUIDE_VERSION
 
 
 _HOW_TO_TITLES = {
+    "War Bot · Guide",
     "How to use War Bot",
+    "About ranked · SR & team rank",
     "Match chat · blue embeds",
     "Group chat · green embeds",
     "Allies & auto-invite",

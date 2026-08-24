@@ -52,6 +52,13 @@ export default function GroupCard({
     group?.members[0]?.role;
 
   const avgRankIcon = rankIconSrc(group?.teamAvgRank ?? "unranked");
+  const lineupRankIcon = rankIconSrc(group?.lineupTeamRank ?? "unranked");
+  const showLineupRank = Boolean(
+    group?.lineupFingerprintReady && group?.lineupRevealed && lineupRankIcon
+  );
+  const showLineupProgress = Boolean(
+    group?.lineupFingerprintReady && !group?.lineupRevealed && (group?.lineupGamesTogether ?? 0) > 0
+  );
   const seekingOpponents = Boolean(group?.inQueue && group?.canSeekOpponents);
 
   return (
@@ -82,7 +89,26 @@ export default function GroupCard({
           {group?.inQueue && (
             <FillingSurfaceIcons surface={group.fillingSurface} className="shrink-0" />
           )}
-          {avgRankIcon && (
+          {showLineupRank && lineupRankIcon && (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={lineupRankIcon}
+              alt={rankLabel(group?.lineupTeamRank)}
+              title={`Lineup team · ${rankLabel(group?.lineupTeamRank)}${
+                group?.lineupTeamSr != null ? ` · ${group.lineupTeamSr} SR` : ""
+              }`}
+              className="h-9 w-9"
+            />
+          )}
+          {!showLineupRank && showLineupProgress && (
+            <span
+              className="rounded-lg border border-border bg-elevated px-2 py-1 text-[11px] font-medium text-muted"
+              title="Lineup team SR placements"
+            >
+              {group?.lineupGamesTogether}/5
+            </span>
+          )}
+          {!showLineupRank && !showLineupProgress && avgRankIcon && (
             // eslint-disable-next-line @next/next/no-img-element
             <img
               src={avgRankIcon}

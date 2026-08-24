@@ -210,9 +210,9 @@ export default function QueueStartScreen({
             ?
           </span>
           <span className="min-w-0">
-            <span className="block text-sm font-semibold text-fg">How to use</span>
+            <span className="block text-sm font-semibold text-fg">Guide</span>
             <span className="mt-0.5 block text-xs text-muted">
-              Queue flow, Discord chat colors, and how ranked / SR works
+              How to queue, plus how ranked SR, tiers, and team rank work
             </span>
           </span>
         </Link>

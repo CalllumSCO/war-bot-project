@@ -524,7 +524,7 @@ export default function QueueBoard() {
                   if (queueSpy) {
                     return <SpyAvailableCard key={entry.id} entry={entry} />;
                   }
-                  if (seekingOpponents && (entry.anonymous || rankedMode)) {
+                  if (seekingOpponents && (entry.anonymous || rankedMode || entry.lineupSeeded)) {
                     return (
                       <RankedOpponentCard
                         key={entry.id}
