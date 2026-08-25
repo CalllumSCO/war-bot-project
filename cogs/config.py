@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 
 import interactions
@@ -15,6 +16,7 @@ from interactions import (
     SlashCommandChoice,
     SlashContext,
     component_callback,
+    listen,
     slash_command,
     slash_option,
 )
@@ -22,7 +24,12 @@ from interactions import (
 from utils.colors import COLORS
 from utils.config import SCOPES
 from utils.discord_defer import defer_ephemeral, send_ephemeral
-from utils.guild_config import get_guild_config, is_auto_invite_allies_enabled, upsert_guild_config
+from utils.guild_config import (
+    get_guild_config,
+    is_auto_invite_allies_enabled,
+    list_guild_configs,
+    upsert_guild_config,
+)
 from utils.guild_config_schema import (
     CONFIG_SCHEMA_VERSION,
     HOW_TO_GUIDE_VERSION,
@@ -35,6 +42,7 @@ from utils.guild_config_schema import (
     options_by_key,
     pending_config_options,
     review_fields_for,
+    should_alert_config_updates,
 )
 from utils.how_to_use import refresh_how_to_use_channel
 from utils.interactions_helpers import has_guild_admin
@@ -43,6 +51,75 @@ from utils.interactions_helpers import has_guild_admin
 class ServerConfig(Extension):
     def __init__(self, bot: interactions.Client):
         self.bot = bot
+
+    @listen()
+    async def on_startup(self):
+        """Nudge #team-queue when a guild's config ack is behind the current schema."""
+        await asyncio.sleep(3)
+        await self._alert_outdated_guild_configs()
+
+    async def _alert_outdated_guild_configs(self) -> None:
+        notified = 0
+        skipped = 0
+        for config in list_guild_configs():
+            try:
+                if not should_alert_config_updates(config):
+                    skipped += 1
+                    continue
+
+                guild_id = int(config.get("guild_id") or 0)
+                channel_id = config.get("queue_channel_id")
+                if not guild_id or not channel_id:
+                    skipped += 1
+                    continue
+
+                pending = pending_config_options(config)
+                howto_old = how_to_guide_outdated(config)
+                guild_name = config.get("name") or str(guild_id)
+
+                lines = [
+                    f"**War Bot config updates available** (schema **v{CONFIG_SCHEMA_VERSION}**).",
+                    "An admin should run `/config action:Check for updates` to review new "
+                    "preferences (or keep defaults) and refresh `#how-to-use` if needed.",
+                ]
+                if pending:
+                    names = ", ".join(f"**{opt.name}**" for opt in pending)
+                    lines.append(f"New options: {names}")
+                if howto_old:
+                    lines.append(
+                        f"#how-to-use guide outdated "
+                        f"(**v{get_how_to_guide_version(config)}** → **v{HOW_TO_GUIDE_VERSION}**)."
+                    )
+                lines.append(
+                    "_Turn off these alerts with_ `/config setting:Config update alerts value:Off`."
+                )
+
+                embed = interactions.Embed(
+                    title="Config updates available",
+                    description="\n".join(lines),
+                    color=COLORS["waiting"],
+                )
+                embed.set_footer(text=f"War Bot · {guild_name}")
+
+                channel = await self.bot.fetch_channel(int(channel_id))
+                if channel is None:
+                    skipped += 1
+                    continue
+                await channel.send(embeds=embed)
+                upsert_guild_config(
+                    guild_id,
+                    guild_name,
+                    config_update_alert_version=CONFIG_SCHEMA_VERSION,
+                )
+                notified += 1
+            except Exception as exc:
+                print(f"⚠️ Config update alert failed for guild {config.get('guild_id')}: {exc}")
+
+        if notified or skipped:
+            print(
+                f"🔔 Config update alerts: notified {notified} guild(s), "
+                f"skipped {skipped}"
+            )
 
     @slash_command(
         name="config",
@@ -67,6 +144,7 @@ class ServerConfig(Extension):
         opt_type=OptionType.STRING,
         choices=[
             SlashCommandChoice(name="Auto-invite allies", value="auto_invite_allies"),
+            SlashCommandChoice(name="Config update alerts", value="config_update_alerts"),
         ],
     )
     @slash_option(
@@ -148,41 +226,50 @@ class ServerConfig(Extension):
             return
 
         if setting and value:
-            if setting == "auto_invite_allies":
-                enabled = value == "on"
-                fields = {
-                    "auto_invite_allies": enabled,
-                    **review_fields_for(config, ["auto_invite_allies"]),
-                }
-                upsert_guild_config(guild_id, guild_name, **fields)
-                config = get_guild_config(guild_id) or config
-
-                if enabled:
-                    warn = await self._ensure_auto_invite_ready(ctx, config)
-                    if warn:
-                        await send_ephemeral(ctx, warn)
-                        return
-                    config = get_guild_config(guild_id) or config
-
-                await send_ephemeral(
-                    ctx,
-                    embeds=self._config_embed(
-                        guild_name,
-                        config,
-                        title="Config updated",
-                        description=(
-                            f"**Auto-invite allies** is now **{'On' if enabled else 'Off'}**.\n"
-                            + (
-                                "Accepted allies who aren't in this server get a one-time DM invite."
-                                if enabled
-                                else "Accepted allies will not receive a Discord invite from War Bot."
-                            )
-                        ),
-                    ),
-                )
+            opt = options_by_key().get(setting)
+            if not opt:
+                await send_ephemeral(ctx, "Unknown setting.")
                 return
 
-            await send_ephemeral(ctx, "Unknown setting.")
+            enabled = value == "on"
+            fields = {
+                setting: enabled,
+                **review_fields_for(config, [setting]),
+            }
+            upsert_guild_config(guild_id, guild_name, **fields)
+            config = get_guild_config(guild_id) or config
+
+            if setting == "auto_invite_allies" and enabled:
+                warn = await self._ensure_auto_invite_ready(ctx, config)
+                if warn:
+                    await send_ephemeral(ctx, warn)
+                    return
+                config = get_guild_config(guild_id) or config
+
+            detail = {
+                "auto_invite_allies": (
+                    "Accepted allies who aren't in this server get a one-time DM invite."
+                    if enabled
+                    else "Accepted allies will not receive a Discord invite from War Bot."
+                ),
+                "auto_ack_new_features": (
+                    "When War Bot ships new preferences, a notice will be posted in #team-queue."
+                    if enabled
+                    else "War Bot will not post config-update notices to #team-queue on startup."
+                ),
+            }.get(setting, "")
+
+            await send_ephemeral(
+                ctx,
+                embeds=self._config_embed(
+                    guild_name,
+                    config,
+                    title="Config updated",
+                    description=(
+                        f"**{opt.name}** is now **{'On' if enabled else 'Off'}**.\n" + detail
+                    ),
+                ),
+            )
             return
 
         if setting and not value:
@@ -519,6 +606,17 @@ class ServerConfig(Extension):
         if on and role_id:
             detail += f" · <@&{role_id}>"
         embed.add_field(name="Auto-invite allies", value=detail, inline=False)
+
+        alerts_opt = options_by_key().get("auto_ack_new_features")
+        if alerts_opt:
+            alerts_on = effective_bool(config, alerts_opt)
+            alerts_detail = (
+                "On (default)"
+                if alerts_on and "auto_ack_new_features" not in config
+                else ("On" if alerts_on else "Off")
+            )
+            embed.add_field(name="Config update alerts", value=alerts_detail, inline=False)
+
         queue_id = config.get("queue_channel_id")
         embed.add_field(
             name="Team queue",

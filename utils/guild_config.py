@@ -211,6 +211,11 @@ def get_queue_channel_id(guild_id: int) -> Optional[int]:
     return None
 
 
+def list_guild_configs() -> list[Dict[str, Any]]:
+    """All stored guild configs (setup servers)."""
+    return list(_all_guilds().values())
+
+
 def is_auto_invite_allies_enabled(config: Optional[Dict[str, Any]]) -> bool:
     """Default ON unless explicitly disabled in guild config."""
     if not config:

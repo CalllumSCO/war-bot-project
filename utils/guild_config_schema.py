@@ -1,4 +1,4 @@
-"""Guild preference schema — versioned options for SkyHanni-style update checks.
+"""Guild preference schema 
 
 Bump ``CONFIG_SCHEMA_VERSION`` when adding a new preference option, and append
 an entry to ``CONFIG_OPTIONS`` with ``introduced_in`` set to that version.
@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Set
 
 # Bump when adding a new toggle/preference (not channel linking).
-CONFIG_SCHEMA_VERSION = 1
+CONFIG_SCHEMA_VERSION = 1.1
 
 # Bump when build_how_to_use_embeds() content/layout changes.
 HOW_TO_GUIDE_VERSION = 4
@@ -25,7 +25,7 @@ class ConfigOption:
     name: str
     description: str
     default: bool
-    introduced_in: int
+    introduced_in: float
     kind: str = "bool"  # only bool toggles for now
 
 
@@ -40,6 +40,15 @@ CONFIG_OPTIONS: List[ConfigOption] = [
         default=True,
         introduced_in=1,
     ),
+    ConfigOption(
+        key="config_update_alerts",
+        name="Config update alerts",
+        description=(
+            "On new preference options, alert the server with a bot message."
+        ),
+        default=True,
+        introduced_in=1.1,
+    ),
 ]
 
 
@@ -47,24 +56,33 @@ def options_by_key() -> Dict[str, ConfigOption]:
     return {opt.key: opt for opt in CONFIG_OPTIONS}
 
 
-def get_config_ack_version(config: Optional[Dict[str, Any]]) -> int:
-    if not config:
-        return 0
-    raw = config.get("config_version_ack")
+def _as_version(raw: Any) -> float:
     try:
-        return int(raw)
+        return float(raw)
     except (TypeError, ValueError):
-        return 0
+        return 0.0
+
+
+def get_config_ack_version(config: Optional[Dict[str, Any]]) -> float:
+    if not config:
+        return 0.0
+    return _as_version(config.get("config_version_ack"))
 
 
 def get_how_to_guide_version(config: Optional[Dict[str, Any]]) -> int:
     if not config:
         return 0
-    raw = config.get("how_to_guide_version")
     try:
-        return int(raw)
+        return int(config.get("how_to_guide_version"))
     except (TypeError, ValueError):
         return 0
+
+
+def get_config_update_alert_version(config: Optional[Dict[str, Any]]) -> float:
+    """Last schema version we already posted a team-queue update alert for."""
+    if not config:
+        return 0.0
+    return _as_version(config.get("config_update_alert_version"))
 
 
 def get_reviewed_keys(config: Optional[Dict[str, Any]]) -> Set[str]:
@@ -108,6 +126,24 @@ def effective_bool(config: Optional[Dict[str, Any]], opt: ConfigOption) -> bool:
         return bool(opt.default)
     return bool(config.get(opt.key))
 
+
+def is_config_update_alerts_enabled(config: Optional[Dict[str, Any]]) -> bool:
+    """Default ON — posts to #team-queue when schema is ahead of this guild."""
+    opt = options_by_key().get("config_update_alerts")
+    if not opt:
+        return True
+    return effective_bool(config, opt)
+
+
+def should_alert_config_updates(config: Optional[Dict[str, Any]]) -> bool:
+    """True when startup should notify #team-queue about pending config / guide updates."""
+    if not config or not has_pending_updates(config):
+        return False
+    if not is_config_update_alerts_enabled(config):
+        return False
+    if get_config_update_alert_version(config) >= float(CONFIG_SCHEMA_VERSION):
+        return False
+    return True
 
 def review_fields_for(
     config: Optional[Dict[str, Any]],
