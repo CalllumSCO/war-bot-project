@@ -4,13 +4,13 @@ import { getPublicProfile, type PublicProfile } from "@/lib/api";
 export default async function PublicProfilePage({
   params,
 }: {
-  params: Promise<{ discordId: string }>;
+  params: Promise<{ slug: string }>;
 }) {
-  const { discordId } = await params;
+  const { slug } = await params;
 
   let profile: PublicProfile | null = null;
   try {
-    profile = await getPublicProfile(discordId);
+    profile = await getPublicProfile(slug);
   } catch {
     profile = null;
   }

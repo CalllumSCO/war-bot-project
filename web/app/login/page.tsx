@@ -2,7 +2,7 @@
 
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { getDiscordLoginUrl, hasUsableSession } from "@/lib/api";
+import { getDiscordLoginUrl, hasUsableSession, consumeReturnAfterLogin } from "@/lib/api";
 
 function DiscordIcon() {
   return (
@@ -17,7 +17,7 @@ export default function LoginPage() {
   const loginUrl = getDiscordLoginUrl();
 
   useEffect(() => {
-    if (hasUsableSession()) router.replace("/q");
+    if (hasUsableSession()) router.replace(consumeReturnAfterLogin("/q"));
   }, [router]);
 
   return (

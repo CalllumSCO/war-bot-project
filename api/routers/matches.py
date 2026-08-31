@@ -69,9 +69,12 @@ def _war_author(lineup: list[dict[str, Any]] | None, war_id: str | None) -> int 
 
 
 def _enrich_match_session(session: dict[str, Any]) -> dict[str, Any]:
+    from api.services.lineup_display import enrich_lineup_for_match
     from utils.war_cancel_store import find_cancel_for_war
 
     out = dict(session)
+    out["lineup_a"] = enrich_lineup_for_match(session.get("lineup_a"))
+    out["lineup_b"] = enrich_lineup_for_match(session.get("lineup_b"))
     out["author_a_id"] = _war_author(session.get("lineup_a"), session.get("war_a_id"))
     out["author_b_id"] = _war_author(session.get("lineup_b"), session.get("war_b_id"))
     cancel = None
@@ -183,7 +186,18 @@ def get_messages(
     if not session:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Match session not found.")
     _require_participant(session, user)
-    return list_messages(session_id, channel, limit=limit, before_id=before_id)
+    from api.services.lineup_display import author_name_color
+
+    messages = list_messages(session_id, channel, limit=limit, before_id=before_id)
+    enriched = []
+    for msg in messages:
+        row = dict(msg)
+        author_id = row.get("author_discord_id")
+        color = author_name_color(int(author_id) if author_id is not None else None)
+        if color:
+            row["author_color"] = color
+        enriched.append(row)
+    return enriched
 
 
 class MessageCreate(BaseModel):

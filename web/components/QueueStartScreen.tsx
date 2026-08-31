@@ -3,6 +3,12 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import {
+  DEFAULT_QUEUE_COMBO,
+  isQueueComboEnabled,
+  QUEUE_COMBOS,
+  type QueueCombo,
+} from "@/lib/queueModes";
+import {
   getCachedProfile,
   getCachedMe,
   getMeCached,
@@ -21,6 +27,46 @@ export type StartChoices = {
   entry: StartEntry;
 };
 
+function ComboButton({
+  combo,
+  selected,
+  onSelect,
+}: {
+  combo: QueueCombo;
+  selected: boolean;
+  onSelect: () => void;
+}) {
+  const disabled = !combo.enabled;
+
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={() => {
+        if (!disabled) onSelect();
+      }}
+      className={`relative rounded-xl border px-3 py-3 text-left transition ${
+        disabled
+          ? "cursor-not-allowed border-border/60 bg-elevated/40 opacity-60"
+          : selected
+            ? "border-accent bg-accent/15 text-fg"
+            : "border-border bg-elevated text-muted hover:text-fg"
+      }`}
+    >
+      {combo.coming_soon && (
+        <span className="absolute right-2 top-2 rounded-full bg-muted/30 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted">
+          Soon
+        </span>
+      )}
+      <span className="block text-sm font-semibold">{combo.label}</span>
+      <span className="text-xs opacity-80">
+        {combo.war_type === "RT" ? "Regular Tracks" : "Custom Tracks"} ·{" "}
+        {combo.mode === "ranked" ? "Ranked" : "Casual"}
+      </span>
+    </button>
+  );
+}
+
 export default function QueueStartScreen({
   busy,
   error,
@@ -30,9 +76,8 @@ export default function QueueStartScreen({
   error?: string | null;
   onStart: (choices: StartChoices) => void;
 }) {
-  const [warType, setWarType] = useState<"RT" | "CT">("RT");
+  const [combo, setCombo] = useState<QueueCombo>(DEFAULT_QUEUE_COMBO);
   const [role, setRole] = useState<Role>("runner");
-  const [mode, setMode] = useState<"ranked" | "casual">("ranked");
   const [isSupporter, setIsSupporter] = useState(() =>
     typeof window !== "undefined" ? Boolean(getCachedProfile()?.supporter) : false
   );
@@ -54,7 +99,15 @@ export default function QueueStartScreen({
     };
   }, []);
 
-  const start = (entry: StartEntry) => onStart({ warType, role, mode, entry });
+  const start = (entry: StartEntry) =>
+    onStart({
+      warType: combo.war_type,
+      role,
+      mode: combo.mode,
+      entry,
+    });
+
+  const canStart = combo.enabled && isQueueComboEnabled(combo.war_type, combo.mode);
 
   return (
     <main className="mx-auto flex min-h-[calc(100vh-3.5rem)] max-w-md flex-col items-center justify-center px-4 py-10">
@@ -77,29 +130,21 @@ export default function QueueStartScreen({
 
       <div className="w-full space-y-5">
         <section>
-          <p className="mb-2 text-xs font-medium uppercase tracking-wide text-muted">Track</p>
+          <p className="mb-2 text-xs font-medium uppercase tracking-wide text-muted">Queue</p>
           <div className="grid grid-cols-2 gap-2">
-            {(
-              [
-                ["RT", "Regular Tracks"],
-                ["CT", "Custom Tracks"],
-              ] as const
-            ).map(([key, label]) => (
-              <button
-                key={key}
-                type="button"
-                onClick={() => setWarType(key)}
-                className={`rounded-xl border px-3 py-3 text-left transition ${
-                  warType === key
-                    ? "border-accent bg-accent/15 text-fg"
-                    : "border-border bg-elevated text-muted hover:text-fg"
-                }`}
-              >
-                <span className="block text-sm font-semibold">{key}</span>
-                <span className="text-xs opacity-80">{label}</span>
-              </button>
+            {QUEUE_COMBOS.map((item) => (
+              <ComboButton
+                key={item.id}
+                combo={item}
+                selected={combo.id === item.id}
+                onSelect={() => setCombo(item)}
+              />
             ))}
           </div>
+          <p className="mt-2 text-xs text-muted">
+            Only <span className="font-medium text-fg">RT Ranked</span> is open at launch. Other
+            boards are coming soon.
+          </p>
         </section>
 
         <section>
@@ -127,31 +172,6 @@ export default function QueueStartScreen({
           </div>
         </section>
 
-        <section>
-          <p className="mb-2 text-xs font-medium uppercase tracking-wide text-muted">Mode</p>
-          <div className="grid grid-cols-2 gap-2">
-            {(
-              [
-                ["ranked", "Ranked"],
-                ["casual", "Casual"],
-              ] as const
-            ).map(([key, label]) => (
-              <button
-                key={key}
-                type="button"
-                onClick={() => setMode(key)}
-                className={`rounded-xl border px-3 py-3 text-sm font-medium transition ${
-                  mode === key
-                    ? "border-accent bg-accent/15 text-fg"
-                    : "border-border bg-elevated text-muted hover:text-fg"
-                }`}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-        </section>
-
         {error && (
           <div className="rounded-lg border border-danger/30 bg-danger/10 px-3 py-2 text-center text-sm text-danger">
             <p>{error}</p>
@@ -169,7 +189,7 @@ export default function QueueStartScreen({
         <div className="space-y-2.5">
           <button
             type="button"
-            disabled={busy}
+            disabled={busy || !canStart}
             onClick={() => start("queue")}
             className="w-full rounded-xl bg-accent px-4 py-3 text-sm font-semibold text-white transition hover:bg-accent-hover disabled:opacity-50"
           >
@@ -178,7 +198,7 @@ export default function QueueStartScreen({
 
           <button
             type="button"
-            disabled={busy}
+            disabled={busy || !canStart}
             onClick={() => start("friends")}
             className="w-full rounded-xl border border-accent bg-transparent px-4 py-3 text-sm font-semibold text-accent transition hover:bg-accent/10 disabled:opacity-50"
           >
@@ -188,7 +208,7 @@ export default function QueueStartScreen({
           {isSupporter ? (
             <button
               type="button"
-              disabled={busy}
+              disabled={busy || !canStart}
               onClick={() => start("preview")}
               className="w-full px-2 py-1.5 text-center text-sm text-muted underline-offset-2 transition hover:text-accent hover:underline disabled:opacity-50"
             >

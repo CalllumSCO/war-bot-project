@@ -62,6 +62,28 @@ def get_current_user(request: Request) -> CurrentUser:
     )
 
 
+def require_admin(user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
+    """Gate admin-only routes (manual supporter grants, etc.)."""
+    import os
+
+    raw = os.getenv("ADMIN_DISCORD_IDS", "").strip()
+    admin_ids: set[int] = set()
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            admin_ids.add(int(part))
+        except ValueError:
+            continue
+    if user.discord_id not in admin_ids:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin access required.",
+        )
+    return user
+
+
 async def require_linked_fc(user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
     """Gate for queue actions: the user must have a linked Wii friend code."""
     from utils.player_links import resolve_friend_code

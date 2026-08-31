@@ -92,6 +92,12 @@ export default function NavBar() {
             Queue
           </Link>
           <Link
+            href="/leaderboard"
+            className="rounded-lg px-3 py-1.5 text-muted transition hover:bg-panel hover:text-fg"
+          >
+            Leaderboard
+          </Link>
+          <Link
             href="/q/info"
             className="rounded-lg px-3 py-1.5 text-muted transition hover:bg-panel hover:text-fg"
           >
@@ -138,6 +144,14 @@ export default function NavBar() {
                     className="block px-3 py-2 text-sm text-fg transition hover:bg-elevated"
                   >
                     Profile
+                  </Link>
+                  <Link
+                    role="menuitem"
+                    href="/me/supporter"
+                    onClick={() => setMenuOpen(false)}
+                    className="block px-3 py-2 text-sm text-fg transition hover:bg-elevated"
+                  >
+                    Supporter
                   </Link>
                   <Link
                     role="menuitem"

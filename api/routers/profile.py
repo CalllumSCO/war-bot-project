@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from api.auth.deps import CurrentUser, get_current_user
 from api.services.profile_fields import (
@@ -13,7 +13,17 @@ from api.services.profile_fields import (
     is_supporter,
     update_extended_profile_fields,
 )
+from utils.favorite_lane import normalize_favorite_lane
+from api.services.profile_lookup import resolve_profile_identifier
+from api.services.supporter import (
+    has_supporter_tier,
+    is_supporter_plus,
+    normalize_alias,
+    tier_label,
+    validate_alias,
+)
 from domain.ratings import get_player_ratings_map
+from utils.db import get_conn, use_json_stores
 from utils.player_profile_store import get_profile, has_linked_fc
 
 router = APIRouter(tags=["profile"])
@@ -26,7 +36,6 @@ def _ratings_summary(discord_id: int) -> dict[str, Any]:
     from utils.sr import display_sr, get_player_rating
 
     lanes = get_player_ratings_map(discord_id)
-    # If SR table has nothing for this user, seed display lanes from legacy MMR JSON.
     if not lanes:
         try:
             from utils.player_store import DEFAULT_PLAYER_MMR, get_player
@@ -66,7 +75,6 @@ def _ratings_summary(discord_id: int) -> dict[str, Any]:
             lane = lanes.get(f"{track}:{role_key}")
             if not lane:
                 lane = get_player_rating(discord_id, track.upper(), role=role_key)
-            # JSON-safe primitives only (pg may return Decimals).
             track_summary[role_key] = {
                 "sr": int(lane["sr"]) if lane.get("sr") is not None else None,
                 "rank": str(lane.get("rank") or "unranked"),
@@ -78,31 +86,19 @@ def _ratings_summary(discord_id: int) -> dict[str, Any]:
     return summary
 
 
-@router.get("/me/profile")
-async def get_my_profile(user: CurrentUser = Depends(get_current_user)) -> dict[str, Any]:
-    base = get_profile(user.discord_id) or {}
-    extended = get_extended_profile_fields(user.discord_id)
-    # One-shot backfill for players who linked FC before Lounge/MKC preload existed.
-    if base.get("friend_code") and (
-        not (extended.get("mkc_url") or "").strip()
-        or not (extended.get("lounge_url") or "").strip()
-    ):
-        from utils.player_links import preload_external_profile_links
-
-        try:
-            await preload_external_profile_links(
-                user.discord_id,
-                friend_code=base.get("friend_code"),
-                lounge_player_id=base.get("lounge_player_id"),
-            )
-        except Exception:
-            pass
-        extended = get_extended_profile_fields(user.discord_id)
-    payload = {
-        "discord_id": str(user.discord_id),
-        "username": extended.get("discord_username") or user.username,
-        "display_name": extended.get("display_name") or user.display_name,
-        "avatar": extended.get("discord_avatar_url") or user.avatar,
+def _profile_payload(discord_id: int, user: CurrentUser | None = None) -> dict[str, Any]:
+    base = get_profile(discord_id) or {}
+    extended = get_extended_profile_fields(discord_id)
+    tier = extended.get("supporter_tier")
+    active = bool(tier or extended.get("supporter"))
+    return {
+        "discord_id": str(discord_id),
+        "username": extended.get("discord_username") or (user.username if user else None),
+        "display_name": extended.get("display_name")
+        or (user.display_name if user else None)
+        or (base or {}).get("lounge_name")
+        or str(discord_id),
+        "avatar": extended.get("discord_avatar_url") or (user.avatar if user else None),
         "friend_code": base.get("friend_code"),
         "has_linked_fc": bool(base.get("friend_code")),
         "lounge_name": base.get("lounge_name"),
@@ -114,10 +110,76 @@ async def get_my_profile(user: CurrentUser = Depends(get_current_user)) -> dict[
         "bluesky_url": extended.get("bluesky_url"),
         "youtube_url": extended.get("youtube_url"),
         "twitch_url": extended.get("twitch_url"),
-        "accent_color": extended.get("accent_color"),
-        "supporter": extended.get("supporter", False),
-        "ratings": _ratings_summary(user.discord_id),
+        "accent_color": extended.get("accent_color") if active else None,
+        "lineup_name_color": extended.get("lineup_name_color") if active else None,
+        "favorite_track": extended.get("favorite_track") if active else None,
+        "profile_alias": extended.get("profile_alias") if tier == "supporter_plus" else None,
+        "profile_path": (
+            f"/u/{extended.get('profile_alias')}"
+            if tier == "supporter_plus" and extended.get("profile_alias")
+            else f"/u/{discord_id}"
+        ),
+        "supporter": active,
+        "supporter_tier": tier,
+        "supporter_tier_label": tier_label(tier if active else None),
+        "display_name_custom": bool(extended.get("display_name_custom")),
+        "ratings": _ratings_summary(discord_id),
     }
+
+
+def _alias_taken(alias: str, discord_id: int) -> bool:
+    if use_json_stores():
+        from utils.player_profile_store import _load_all
+
+        for key in (_load_all().get("profiles") or {}).keys():
+            try:
+                did = int(key)
+            except (TypeError, ValueError):
+                continue
+            if did == discord_id:
+                continue
+            extended = get_extended_profile_fields(did)
+            if (extended.get("profile_alias") or "").strip().lower() == alias:
+                return True
+        return False
+
+    try:
+        with get_conn() as conn:
+            cursor = conn.cursor()
+            try:
+                cursor.execute(
+                    """
+                    SELECT 1 FROM players
+                    WHERE LOWER(profile_alias) = %s AND discord_id <> %s
+                    LIMIT 1
+                    """,
+                    (alias, int(discord_id)),
+                )
+                return cursor.fetchone() is not None
+            finally:
+                cursor.close()
+    except Exception:
+        return False
+
+
+@router.get("/me/profile")
+async def get_my_profile(user: CurrentUser = Depends(get_current_user)) -> dict[str, Any]:
+    base = get_profile(user.discord_id) or {}
+    if base.get("friend_code") and (
+        not (get_extended_profile_fields(user.discord_id).get("mkc_url") or "").strip()
+        or not (get_extended_profile_fields(user.discord_id).get("lounge_url") or "").strip()
+    ):
+        from utils.player_links import preload_external_profile_links
+
+        try:
+            await preload_external_profile_links(
+                user.discord_id,
+                friend_code=base.get("friend_code"),
+                lounge_player_id=base.get("lounge_player_id"),
+            )
+        except Exception:
+            pass
+    payload = _profile_payload(user.discord_id, user)
     try:
         from utils.lineup_sr import lineup_cards_for_profile
 
@@ -136,11 +198,13 @@ class ProfileUpdate(BaseModel):
     youtube_url: str | None = None
     twitch_url: str | None = None
     accent_color: str | None = None
+    lineup_name_color: str | None = None
+    display_name: str | None = Field(default=None, max_length=64)
+    favorite_track: str | None = None
+    profile_alias: str | None = Field(default=None, max_length=32)
 
 
 class FriendCodeLinkBody(BaseModel):
-    """Omit or leave empty to auto-link from Lounge; otherwise save a WiimmFI FC."""
-
     friend_code: str | None = None
 
 
@@ -152,13 +216,54 @@ def update_my_profile(
     fields = body.model_dump(exclude_unset=True)
 
     if fields.get("accent_color") is not None and not is_supporter(user.discord_id):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Custom accent colors are a supporter perk.")
+    if fields.get("lineup_name_color") is not None and not is_supporter(user.discord_id):
         raise HTTPException(
             status.HTTP_403_FORBIDDEN,
-            "Custom accent colors are a supporter perk.",
+            "Custom match/chat name colors are a supporter perk.",
         )
+    if fields.get("display_name") is not None and not has_supporter_tier(user.discord_id):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Custom display names are a supporter perk.")
+    if fields.get("favorite_track") is not None and not has_supporter_tier(user.discord_id):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Favorite track pinning is a supporter perk.")
+    if "profile_alias" in fields and not is_supporter_plus(user.discord_id):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Vanity profile URLs are a Supporter+ perk.")
 
-    updated = update_extended_profile_fields(user.discord_id, **fields)
-    return {"discord_id": user.discord_id, **updated}
+    updates: dict[str, Any] = dict(fields)
+    if "display_name" in updates:
+        name = (updates.pop("display_name") or "").strip()
+        if not name:
+            updates["display_name"] = None
+            updates["display_name_custom"] = False
+        else:
+            updates["display_name"] = name[:64]
+            updates["display_name_custom"] = True
+
+    if "profile_alias" in updates:
+        raw_alias = updates.pop("profile_alias")
+        if raw_alias is None or not str(raw_alias).strip():
+            updates["profile_alias"] = None
+        else:
+            alias = normalize_alias(str(raw_alias))
+            error = validate_alias(alias)
+            if error:
+                raise HTTPException(status.HTTP_400_BAD_REQUEST, error)
+            if _alias_taken(alias, user.discord_id):
+                raise HTTPException(status.HTTP_409_CONFLICT, "That alias is already taken.")
+            updates["profile_alias"] = alias
+
+    if "favorite_track" in updates:
+        if updates["favorite_track"] is None:
+            pass
+        else:
+            try:
+                updates["favorite_track"] = normalize_favorite_lane(str(updates["favorite_track"]))
+            except ValueError as exc:
+                raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+
+    if updates:
+        update_extended_profile_fields(user.discord_id, **updates)
+    return _profile_payload(user.discord_id, user)
 
 
 @router.post("/me/friend-code")
@@ -166,12 +271,6 @@ async def link_my_friend_code(
     body: FriendCodeLinkBody,
     user: CurrentUser = Depends(get_current_user),
 ) -> dict[str, Any]:
-    """Link a Wii friend code (manual or Lounge auto-detect).
-
-    Auto-link is best-effort: if Lounge can't resolve an FC, return the current
-    profile with a soft hint (HTTP 200) so the client can fall back to manual
-    entry without treating it as an error.
-    """
     from utils.lounge_api import LoungeAPIError, lookup_lounge_player_by_discord
     from utils.player_links import link_manual_friend_code, try_lounge_link
 
@@ -194,11 +293,7 @@ async def link_my_friend_code(
             )
         else:
             hint = "Enter your WiimmFI friend code (XXXX-XXXX-XXXX) below."
-        return {
-            **current,
-            "auto_link": False,
-            "auto_link_hint": hint,
-        }
+        return {**current, "auto_link": False, "auto_link_hint": hint}
 
     lounge_player = None
     try:
@@ -219,9 +314,14 @@ async def link_my_friend_code(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Could not save friend code.")
     return await get_my_profile(user)
 
-@router.get("/users/{discord_id}")
-def get_public_profile(discord_id: int) -> dict[str, Any]:
-    """Public profile for Discord `/profile` deep links — no auth required."""
+
+@router.get("/users/{identifier}")
+def get_public_profile(identifier: str) -> dict[str, Any]:
+    """Public profile by Discord snowflake or Supporter+ alias."""
+    discord_id = resolve_profile_identifier(identifier)
+    if discord_id is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Player not found.")
+
     base = get_profile(discord_id)
     extended = get_extended_profile_fields(discord_id)
 
@@ -233,29 +333,13 @@ def get_public_profile(discord_id: int) -> dict[str, Any]:
             or base.get("lounge_player_id")
         )
     )
+    skip_keys = {"supporter", "supporter_tier", "display_name_custom", "lineup_name_color", "profile_alias"}
     has_extended = any(
         value not in (None, "", False)
         for key, value in extended.items()
-        if key != "supporter"
+        if key not in skip_keys
     )
-    if not has_base and not has_extended:
+    if not has_base and not has_extended and not extended.get("supporter_tier"):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Player not found.")
 
-    return {
-        "discord_id": str(discord_id),
-        "username": extended.get("discord_username"),
-        "display_name": extended.get("display_name") or (base or {}).get("lounge_name") or str(discord_id),
-        "avatar": extended.get("discord_avatar_url"),
-        "bio": extended.get("bio"),
-        "mkc_url": extended.get("mkc_url"),
-        "lounge_url": extended.get("lounge_url"),
-        "x_url": extended.get("x_url"),
-        "bluesky_url": extended.get("bluesky_url"),
-        "youtube_url": extended.get("youtube_url"),
-        "twitch_url": extended.get("twitch_url"),
-        "accent_color": extended.get("accent_color") if extended.get("supporter") else None,
-        "supporter": extended.get("supporter", False),
-        "friend_code": (base or {}).get("friend_code"),
-        "has_linked_fc": has_linked_fc(discord_id),
-        "ratings": _ratings_summary(discord_id),
-    }
+    return _profile_payload(discord_id)

@@ -107,7 +107,9 @@ function ChatPanel({ sessionId, scope }: { sessionId: string; scope: ChatScope }
         ) : (
           messages.map((msg) => (
             <div key={msg.id} className="text-sm">
-              <span className="font-medium text-fg">{msg.authorName ?? msg.author_name ?? "Unknown"}</span>
+              <span className="font-medium text-fg" style={msg.author_color ? { color: msg.author_color } : undefined}>
+                {msg.authorName ?? msg.author_name ?? "Unknown"}
+              </span>
               <span className="ml-2 text-muted">{msg.text ?? msg.body ?? ""}</span>
             </div>
           ))

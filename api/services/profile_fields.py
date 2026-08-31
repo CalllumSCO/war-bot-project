@@ -1,7 +1,7 @@
 """
 Read/write helpers for the schema_v2 profile-cosmetics columns on `players`
 (bio, mkc_url, lounge_url, socials, discord_avatar_url, discord_username,
-display_name, supporter, accent_color, chat_name_color).
+display_name, supporter, accent_color, chat_name_color, supporter_tier, etc.).
 
 `utils.player_profile_store` only persists the friend-code/lounge link
 columns to Postgres, so these extra fields are handled here directly. This
@@ -35,7 +35,16 @@ EXTENDED_FIELDS: tuple[str, ...] = (
     "supporter",
     "accent_color",
     "chat_name_color",
+    "supporter_tier",
+    "supporter_expires_at",
+    "display_name_custom",
+    "favorite_track",
+    "profile_alias",
+    "lineup_name_color",
 )
+
+INTERNAL_ONLY_FIELDS = frozenset({"supporter", "supporter_tier", "supporter_expires_at"})
+INTERNAL_NULLABLE_FIELDS = frozenset({"supporter_tier", "supporter_expires_at"})
 
 # User-editable fields that may be explicitly cleared with null.
 CLEARABLE_FIELDS = frozenset(
@@ -49,12 +58,37 @@ CLEARABLE_FIELDS = frozenset(
         "twitch_url",
         "accent_color",
         "chat_name_color",
+        "lineup_name_color",
+        "display_name",
+        "favorite_track",
+        "profile_alias",
     }
 )
 
 
 def _defaults() -> dict[str, Any]:
-    return {field: (False if field == "supporter" else None) for field in EXTENDED_FIELDS}
+    return {
+        field: (
+            False
+            if field in ("supporter", "display_name_custom")
+            else None
+        )
+        for field in EXTENDED_FIELDS
+    }
+
+
+def _normalize_extended(result: dict[str, Any]) -> dict[str, Any]:
+    result["supporter"] = bool(result.get("supporter") or result.get("supporter_tier"))
+    if result.get("supporter_tier") not in ("supporter", "supporter_plus"):
+        if result.get("supporter"):
+            result["supporter_tier"] = "supporter"
+        else:
+            result["supporter_tier"] = None
+    result["display_name_custom"] = bool(result.get("display_name_custom"))
+    exp = result.get("supporter_expires_at")
+    if hasattr(exp, "isoformat"):
+        result["supporter_expires_at"] = exp.isoformat()
+    return result
 
 
 def get_extended_profile_fields(discord_id: int) -> dict[str, Any]:
@@ -65,8 +99,7 @@ def get_extended_profile_fields(discord_id: int) -> dict[str, Any]:
         for field in EXTENDED_FIELDS:
             if field in profile:
                 result[field] = profile[field]
-        result["supporter"] = bool(result.get("supporter"))
-        return result
+        return _normalize_extended(result)
 
     try:
         with get_conn() as conn:
@@ -90,8 +123,7 @@ def get_extended_profile_fields(discord_id: int) -> dict[str, Any]:
         return _defaults()
 
     result = dict(zip(EXTENDED_FIELDS, row))
-    result["supporter"] = bool(result.get("supporter"))
-    return result
+    return _normalize_extended(result)
 
 
 def get_extended_profile_fields_many(discord_ids: list[int]) -> dict[int, dict[str, Any]]:
@@ -135,20 +167,26 @@ def get_extended_profile_fields_many(discord_ids: list[int]) -> dict[int, dict[s
     for row in rows:
         did = int(row[0])
         result = dict(zip(EXTENDED_FIELDS, row[1:]))
-        result["supporter"] = bool(result.get("supporter"))
-        out[did] = result
+        out[did] = _normalize_extended(result)
     return out
 
 
-def update_extended_profile_fields(discord_id: int, **fields: Any) -> dict[str, Any]:
+def update_extended_profile_fields(discord_id: int, *, _internal: bool = False, **fields: Any) -> dict[str, Any]:
     """Best-effort write of a subset of the cosmetic profile fields."""
     cleaned: dict[str, Any] = {}
     for key, value in fields.items():
+        if key in INTERNAL_ONLY_FIELDS and not _internal:
+            continue
         if key not in EXTENDED_FIELDS:
             continue
         if value is None and key not in CLEARABLE_FIELDS:
-            continue
+            if not (_internal and key in INTERNAL_NULLABLE_FIELDS):
+                continue
         cleaned[key] = value
+
+    if "supporter_tier" in cleaned:
+        cleaned["supporter"] = bool(cleaned["supporter_tier"])
+
     if not cleaned:
         return get_extended_profile_fields(discord_id)
 
@@ -182,7 +220,6 @@ def update_extended_profile_fields(discord_id: int, **fields: Any) -> dict[str, 
 
 
 def is_supporter(discord_id: int) -> bool:
-    try:
-        return bool(get_extended_profile_fields(discord_id).get("supporter"))
-    except Exception:
-        return False
+    from api.services.supporter import is_supporter as _is_supporter
+
+    return _is_supporter(discord_id)

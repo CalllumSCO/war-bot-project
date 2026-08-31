@@ -2,6 +2,8 @@ import type { Metadata } from "next";
 import type { ReactNode } from "react";
 import Link from "next/link";
 import { rankIconSrc, rankLabel } from "@/lib/ranks";
+import GuideSupporterSection from "@/components/GuideSupporterSection";
+import PatronFooter from "@/components/PatronFooter";
 
 export const metadata: Metadata = {
   title: "War Queue · Guide",
@@ -34,6 +36,11 @@ const PARTS = [
       { id: "team-mmr", label: "Lineup team SR" },
       { id: "updates", label: "What moves SR" },
     ],
+  },
+  {
+    id: "supporters",
+    label: "Supporter perks",
+    sections: [{ id: "supporter-tiers", label: "Tiers & perks" }],
   },
 ] as const;
 
@@ -497,6 +504,9 @@ export default function QueueInfoPage() {
               </ul>
             </section>
           </div>
+
+          <GuideSupporterSection />
+          <PatronFooter />
         </div>
       </div>
     </main>

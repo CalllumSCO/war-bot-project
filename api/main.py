@@ -27,11 +27,16 @@ from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from fastapi.responses import JSONResponse  # noqa: E402
 
 from api.auth.discord import router as auth_router  # noqa: E402
+from api.routers import admin as admin_router  # noqa: E402
 from api.routers import events as events_router  # noqa: E402
+from api.routers import leaderboard as leaderboard_router  # noqa: E402
 from api.routers import matches as matches_router  # noqa: E402
 from api.routers import profile as profile_router  # noqa: E402
 from api.routers import queue as queue_router  # noqa: E402
+from api.routers import supporter as supporter_router  # noqa: E402
+from api.routers import supporters_public as supporters_public_router  # noqa: E402
 from api.routers import wars as wars_router  # noqa: E402
+from api.routers import webhooks as webhooks_router  # noqa: E402
 
 
 def _allowed_origins() -> list[str]:
@@ -103,8 +108,13 @@ def health() -> dict[str, str]:
 
 
 app.include_router(auth_router)
+app.include_router(webhooks_router.router)
 app.include_router(queue_router.router)
 app.include_router(profile_router.router)
+app.include_router(supporter_router.router)
+app.include_router(supporters_public_router.router)
+app.include_router(admin_router.router)
+app.include_router(leaderboard_router.router)
 app.include_router(matches_router.router)
 app.include_router(wars_router.router)
 app.include_router(events_router.router)

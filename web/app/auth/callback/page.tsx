@@ -2,7 +2,7 @@
 
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { captureTokenFromUrl, getMe, getStoredToken } from "@/lib/api";
+import { captureTokenFromUrl, consumeReturnAfterLogin, getMe, getStoredToken } from "@/lib/api";
 
 /** OAuth landing page — persist JWT from ?token=, then go to the queue. */
 export default function AuthCallbackPage() {
@@ -21,7 +21,7 @@ export default function AuthCallbackPage() {
       } catch {
         /* queue can still load; avatar cache is best-effort */
       }
-      if (!cancelled) router.replace("/q");
+      if (!cancelled) router.replace(consumeReturnAfterLogin("/q"));
     })();
     return () => {
       cancelled = true;

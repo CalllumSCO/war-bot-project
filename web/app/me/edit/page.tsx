@@ -1,5 +1,10 @@
 "use client";
 
+import {
+  FAVORITE_LANE_OPTIONS,
+  isFavoriteLane,
+  type FavoriteLane,
+} from "@/lib/favoriteLane";
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
@@ -41,6 +46,10 @@ export default function EditProfilePage() {
   /** Fields that were already set when the page loaded — locked until Unlink. */
   const [locked, setLocked] = useState<Partial<Record<LinkField["key"], boolean>>>({});
   const [accentColor, setAccentColor] = useState("#3b82f6");
+  const [lineupNameColor, setLineupNameColor] = useState("#f59e0b");
+  const [displayName, setDisplayName] = useState("");
+  const [favoriteTrack, setFavoriteTrack] = useState<FavoriteLane>("");
+  const [profileAlias, setProfileAlias] = useState("");
 
   useEffect(() => {
     let mounted = true;
@@ -65,6 +74,12 @@ export default function EditProfilePage() {
           ) as Record<LinkField["key"], boolean>
         );
         setAccentColor(me.accent_color ?? "#3b82f6");
+        setLineupNameColor(me.lineup_name_color ?? "#f59e0b");
+        setDisplayName(me.display_name ?? "");
+        setFavoriteTrack(
+          isFavoriteLane(me.favorite_track ?? "") ? (me.favorite_track as FavoriteLane) : ""
+        );
+        setProfileAlias(me.profile_alias ?? "");
       } catch (err) {
         if (!mounted) return;
         if (err instanceof ApiError && err.status === 401) {
@@ -99,7 +114,17 @@ export default function EditProfilePage() {
         bluesky_url: links.bluesky_url || null,
         youtube_url: links.youtube_url || null,
         twitch_url: links.twitch_url || null,
-        ...(profile?.supporter ? { accent_color: accentColor } : {}),
+        ...(profile?.supporter
+          ? {
+              accent_color: accentColor,
+              lineup_name_color: lineupNameColor,
+              display_name: displayName.trim() || null,
+              favorite_track: favoriteTrack || null,
+            }
+          : {}),
+        ...(profile?.supporter_tier === "supporter_plus"
+          ? { profile_alias: profileAlias.trim() || null }
+          : {}),
       });
       setProfile(updated);
       setLocked(
@@ -217,21 +242,103 @@ export default function EditProfilePage() {
 
       {profile.supporter && (
         <section className="mt-4 rounded-2xl border border-border bg-panel p-5 shadow-panel">
-          <h2 className="text-sm font-semibold text-fg">Supporter customization</h2>
-          <p className="mt-1 text-xs text-muted">
-            Pick colors that show up on your profile and in queue lists.
-          </p>
-          <div className="mt-3 flex flex-wrap gap-6">
-            <label className="flex items-center gap-3">
-              <input
-                type="color"
-                value={accentColor}
-                onChange={(e) => setAccentColor(e.target.value)}
-                className="h-8 w-8 cursor-pointer rounded-full"
-              />
-              <span className="text-sm text-muted">Accent color</span>
-            </label>
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <h2 className="text-sm font-semibold text-fg">Supporter customization</h2>
+              <p className="mt-1 text-xs text-muted">
+                Profile accent, custom display name, featured lane, and match/chat name color.
+              </p>
+            </div>
+            <Link
+              href="/me/supporter"
+              className="shrink-0 text-xs font-medium text-accent hover:underline"
+            >
+              Perks
+            </Link>
           </div>
+          <div className="mt-4 space-y-4">
+            <label className="block">
+              <span className="text-xs text-muted">Display name</span>
+              <input
+                value={displayName}
+                onChange={(e) => setDisplayName(e.target.value)}
+                maxLength={64}
+                placeholder={profile.username ?? "Your name"}
+                className="mt-1 w-full rounded-lg border border-border bg-elevated px-3 py-2 text-sm text-fg placeholder:text-muted focus:border-accent focus:outline-none"
+              />
+            </label>
+            <label className="block">
+              <span className="text-xs text-muted">Featured lane on profile</span>
+              <select
+                value={favoriteTrack}
+                onChange={(e) => {
+                  const value = e.target.value;
+                  setFavoriteTrack(isFavoriteLane(value) ? value : "");
+                }}
+                className="mt-1 w-full rounded-lg border border-border bg-elevated px-3 py-2 text-sm text-fg focus:border-accent focus:outline-none"
+              >
+                {FAVORITE_LANE_OPTIONS.map((opt) => (
+                  <option key={opt.value || "default"} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <div className="flex flex-wrap gap-6">
+              <label className="flex items-center gap-3">
+                <input
+                  type="color"
+                  value={accentColor}
+                  onChange={(e) => setAccentColor(e.target.value)}
+                  className="h-8 w-8 cursor-pointer rounded-full"
+                />
+                <span className="text-sm text-muted">Profile accent</span>
+              </label>
+              <label className="flex items-center gap-3">
+                <input
+                  type="color"
+                  value={lineupNameColor}
+                  onChange={(e) => setLineupNameColor(e.target.value)}
+                  className="h-8 w-8 cursor-pointer rounded-full"
+                />
+                <span className="text-sm text-muted">Match & chat name color</span>
+              </label>
+            </div>
+          </div>
+        </section>
+      )}
+
+      {profile.supporter_tier === "supporter_plus" && (
+        <section className="mt-4 rounded-2xl border border-border bg-panel p-5 shadow-panel">
+          <h2 className="text-sm font-semibold text-fg">Supporter+ vanity URL</h2>
+          <p className="mt-1 text-xs text-muted">
+            Share <span className="font-mono text-fg">/u/your-alias</span> instead of your Discord id.
+          </p>
+          <div className="mt-3 flex items-center gap-2">
+            <span className="text-sm text-muted">/u/</span>
+            <input
+              value={profileAlias}
+              onChange={(e) => setProfileAlias(e.target.value.toLowerCase())}
+              maxLength={32}
+              placeholder="your-alias"
+              className="flex-1 rounded-lg border border-border bg-elevated px-3 py-2 font-mono text-sm text-fg placeholder:text-muted focus:border-accent focus:outline-none"
+            />
+          </div>
+        </section>
+      )}
+
+      {!profile.supporter && (
+        <section className="mt-4 rounded-2xl border border-dashed border-border bg-panel/50 p-5">
+          <h2 className="text-sm font-semibold text-fg">Supporter perks</h2>
+          <p className="mt-1 text-sm text-muted">
+            Queue peeking, profile styling, vanity URLs (Supporter+), and more planned perks.
+          </p>
+          <Link
+            href="/me/supporter"
+            className="mt-3 inline-block text-sm font-medium text-accent hover:underline"
+          >
+            Learn more
+          </Link>
         </section>
       )}
 

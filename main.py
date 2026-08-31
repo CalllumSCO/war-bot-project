@@ -152,6 +152,7 @@ if __name__ == "__main__":
     bot.load_extension("cogs.config")
     bot.load_extension("cogs.team")
     bot.load_extension("cogs.profile")
+    bot.load_extension("cogs.leaderboard")
     bot.load_extension("cogs.queue")
     bot.load_extension("cogs.war_commands")
     bot.load_extension("cogs.help")

@@ -146,14 +146,16 @@ async def callback(
     )
 
     try:
-        from api.services.profile_fields import update_extended_profile_fields
+        from api.services.profile_fields import get_extended_profile_fields, update_extended_profile_fields
 
-        update_extended_profile_fields(
-            discord_id,
-            display_name=global_name or username,
-            discord_username=username,
-            discord_avatar_url=avatar_url,
-        )
+        extended = get_extended_profile_fields(discord_id)
+        identity_updates = {
+            "discord_username": username,
+            "discord_avatar_url": avatar_url,
+        }
+        if not extended.get("display_name_custom"):
+            identity_updates["display_name"] = global_name or username
+        update_extended_profile_fields(discord_id, **identity_updates)
     except Exception as exc:
         print(f"⚠️ Could not cache Discord identity for {discord_id}: {exc}")
 

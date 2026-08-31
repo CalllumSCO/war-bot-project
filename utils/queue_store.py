@@ -65,10 +65,30 @@ def get_party(party_id: str) -> Optional[Dict[str, Any]]:
 
 
 def get_party_by_invite(invite_code: str) -> Optional[Dict[str, Any]]:
-    for party in list_parties():
-        if party.get("invite_code") == invite_code and party.get("status") == "preparing":
-            return party
-    return None
+    code = str(invite_code or "").strip()
+    if not code:
+        return None
+    active_statuses = ("preparing", "posted")
+    if use_json_stores():
+        for party in list_parties():
+            if party.get("invite_code") == code and party.get("status") in active_statuses:
+                return party
+        return None
+    with get_conn() as conn:
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                """
+                SELECT data FROM queue_parties
+                WHERE invite_code = %s AND status IN ('preparing', 'posted')
+                LIMIT 1
+                """,
+                (code,),
+            )
+            row = cursor.fetchone()
+        finally:
+            cursor.close()
+    return _parse(row[0]) if row else None
 
 
 def _discord_ids_equal(left: Any, right: Any) -> bool:

@@ -5,6 +5,7 @@ import type { MyGroup } from "@/lib/api";
 import { rankIconSrc, rankLabel } from "@/lib/ranks";
 import FillingSurfaceIcons from "./FillingSurfaceIcons";
 import PlayerRow from "./PlayerRow";
+import { isQueueComboEnabled } from "@/lib/queueModes";
 
 interface GroupCardProps {
   group: MyGroup | null;
@@ -123,21 +124,29 @@ export default function GroupCard({
       {group?.isCaptain && !group.inQueue && (
         <div className="space-y-2 px-4 pb-3 pt-2">
           <div className="flex gap-1.5">
-            {(["RT", "CT"] as const).map((track) => (
+            {(["RT", "CT"] as const).map((track) => {
+              const mode = (group.mode === "casual" ? "casual" : "ranked") as "ranked" | "casual";
+              const trackDisabled =
+                queueActionBusy || !onChangeTrack || !isQueueComboEnabled(track, mode);
+              return (
               <button
                 key={track}
                 type="button"
-                disabled={queueActionBusy || !onChangeTrack}
+                disabled={trackDisabled}
                 onClick={() => onChangeTrack?.(track)}
-                className={`flex-1 rounded-lg border px-2 py-1.5 text-xs font-medium transition disabled:opacity-50 ${
+                className={`relative flex-1 rounded-lg border px-2 py-1.5 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-50 ${
                   group.warType === track
                     ? "border-accent/50 bg-accent/15 text-accent"
                     : "border-border bg-elevated text-muted hover:text-fg"
                 }`}
               >
                 {track}
+                {track !== "RT" || group.mode === "casual" ? (
+                  <span className="ml-1 text-[10px] font-semibold uppercase text-muted">Soon</span>
+                ) : null}
               </button>
-            ))}
+            );
+            })}
           </div>
           <div className="flex gap-1.5">
             {(["runner", "bagger"] as const).map((role) => (

@@ -11,9 +11,11 @@ import {
   type RatingRow,
   type WarSummary,
 } from "@/lib/api";
+import { parseFavoriteLane, type FavoriteLane } from "@/lib/favoriteLane";
 import { rankIconSrc, rankLabel } from "@/lib/ranks";
 import ProfileLinkIcons from "@/components/ProfileLinkIcons";
 import MatchHistoryList from "@/components/MatchHistoryList";
+import PatronFooter from "@/components/PatronFooter";
 
 const TRACK_LABELS: Record<string, string> = { rt: "Regular Tracks", ct: "Custom Tracks" };
 
@@ -23,6 +25,28 @@ function sortBySrDesc(rows: RatingRow[]): RatingRow[] {
     const bScore = b.revealed && b.sr != null ? b.sr : -1;
     return bScore - aScore;
   });
+}
+
+function pickFeaturedRating(
+  rows: RatingRow[],
+  favoriteLane?: FavoriteLane | string | null
+): [RatingRow | undefined, RatingRow[]] {
+  const sorted = sortBySrDesc(rows);
+  const pref = parseFavoriteLane(favoriteLane);
+  if (!pref) {
+    const [top, ...rest] = sorted;
+    return [top, rest];
+  }
+  let featured: RatingRow | undefined;
+  if (pref.track && pref.role) {
+    featured = sorted.find((row) => row.track === pref.track && row.role === pref.role);
+  } else if (pref.track) {
+    featured = sortBySrDesc(sorted.filter((row) => row.track === pref.track))[0];
+  }
+  featured = featured ?? sorted[0];
+  if (!featured) return [undefined, []];
+  const rest = sorted.filter((row) => row !== featured);
+  return [featured, rest];
 }
 
 function laneTitle(row: RatingRow): string {
@@ -40,8 +64,10 @@ export default function ProfileView({
   const displayName = profileDisplayName(profile);
   const username = profileDiscordUsername(profile);
   const avatarUrl = profileAvatarUrl(profile);
-  const ratings = sortBySrDesc(flattenRatings(profile.ratings));
-  const [top, ...rest] = ratings;
+  const [top, rest] = pickFeaturedRating(
+    flattenRatings(profile.ratings),
+    profile.favorite_track ?? null
+  );
   const topIcon = rankIconSrc(top?.revealed ? top.rank : "unranked");
   const fc = profile.friend_code?.trim() || null;
 
@@ -112,7 +138,9 @@ export default function ProfileView({
               )}
             </div>
             {profile.supporter && (
-              <span className="mt-1 inline-block text-xs font-medium text-warning">Supporter</span>
+              <span className="mt-1 inline-block text-xs font-medium text-warning">
+                {profile.supporter_tier_label ?? "Supporter"}
+              </span>
             )}
             <ProfileLinkIcons profile={profile} />
           </div>
@@ -201,6 +229,8 @@ export default function ProfileView({
           )}
         </div>
       </section>
+
+      <PatronFooter />
     </div>
   );
 }

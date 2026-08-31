@@ -13,6 +13,7 @@ from api.services.profile_fields import (
     get_extended_profile_fields,
     get_extended_profile_fields_many,
 )
+from utils.queue_modes import assert_queue_combo_enabled, list_queue_combos, queue_combo_block_reason
 from classes.player import Player
 from classes.queue_party import MODE_RANKED, PARTY_POSTED, PARTY_PREPARING, QueueParty
 from domain.match import (
@@ -82,6 +83,11 @@ from utils.lineup_lock import find_blocking_lineup, lineup_lock_message
 router = APIRouter(tags=["queue"])
 
 
+@router.get("/queue/combos")
+def get_queue_combos() -> dict[str, Any]:
+    return {"combos": list_queue_combos()}
+
+
 def _player_in_lineup(lineup: list[dict[str, Any]], discord_id: int) -> bool:
     return any(_ids_equal(entry.get("discord_id"), discord_id) for entry in lineup)
 
@@ -125,8 +131,6 @@ def _enrich_lineup_entry(
             out["avatar"] = extended["discord_avatar_url"]
         if extended.get("display_name"):
             out["player"] = extended["display_name"]
-        if extended.get("chat_name_color") and extended.get("supporter"):
-            out["name_color"] = extended["chat_name_color"]
     except Exception:
         pass
 
@@ -363,6 +367,7 @@ def _create_web_solo_party(
     search_time: str = "ASAP",
     team_name: str | None = None,
 ) -> dict[str, Any]:
+    assert_queue_combo_enabled(war_type, mode)
     lineup = [
         Player(
             player=user.display_name,
@@ -478,6 +483,9 @@ def create_party(
     war_type = body.war_type.strip().upper()
     if war_type not in ("RT", "CT"):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "war_type must be 'RT' or 'CT'.")
+    block = queue_combo_block_reason(war_type, body.mode)
+    if block:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, block)
 
     lobby_mode = (body.lobby_mode or "").strip().lower() or None
     if lobby_mode and lobby_mode not in ("friends", "preview"):
@@ -553,6 +561,9 @@ def update_party(
         war_type = body.war_type.strip().upper()
         if war_type not in ("RT", "CT"):
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "war_type must be 'RT' or 'CT'.")
+        block = queue_combo_block_reason(war_type, party.get("mode") or MODE_RANKED)
+        if block:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, block)
         party["war_type"] = war_type
 
     if body.search_time is not None:
@@ -662,6 +673,9 @@ def leave_party(
     if not recreate_solo:
         return {"left": True, "party": None}
 
+    if queue_combo_block_reason(war_type, mode):
+        war_type, mode = "RT", MODE_RANKED
+
     solo = _create_web_solo_party(
         user,
         war_type=war_type if war_type in ("RT", "CT") else "RT",
@@ -685,6 +699,9 @@ def join_queue_endpoint(
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Only the captain can join the queue.")
 
     party = recover_stale_matched_party(party)
+    block = queue_combo_block_reason(party.get("war_type") or "RT", party.get("mode") or MODE_RANKED)
+    if block:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, block)
     updated, message = join_party_queue(party)
     if not updated:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, message or "Could not join the queue.")
@@ -787,6 +804,37 @@ def delete_party_endpoint(
 
     deleted = cancel_party(party_id)
     return {"deleted": deleted}
+
+
+@router.get("/parties/invite/{invite_code}/preview")
+def preview_party_invite(invite_code: str) -> dict[str, Any]:
+    """Public invite preview — no auth (JWT lives in localStorage, not SSR cookies)."""
+    party = get_party_by_invite(invite_code)
+    if not party:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Invite not found or no longer active.")
+    enriched = _enrich_party(party) or party
+    return {
+        "party_id": enriched.get("party_id"),
+        "team_name": enriched.get("team_name"),
+        "war_type": enriched.get("war_type"),
+        "mode": enriched.get("mode"),
+        "status": enriched.get("status"),
+        "lineup": enriched.get("lineup", []),
+        "expired": enriched.get("status") not in (PARTY_PREPARING, PARTY_POSTED),
+    }
+
+
+@router.post("/parties/invite/{invite_code}/join")
+def join_party_by_invite_code(
+    invite_code: str,
+    user: CurrentUser = Depends(require_linked_fc),
+) -> dict[str, Any]:
+    party = get_party_by_invite(invite_code)
+    if not party:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Invite not found or no longer active.")
+    survivor = _merge_user_into_party(user, party)
+    refreshed = get_party(survivor.get("party_id")) or survivor
+    return {"party": _enrich_party(refreshed)}
 
 
 @router.get("/parties/invite/{invite_code}")
@@ -1438,23 +1486,16 @@ def _deny_match_request(request: dict[str, Any], user: CurrentUser) -> dict[str,
     return {"kind": "match", "status": "denied"}
 
 
-def _accept_party_invite(invite: dict[str, Any], user: CurrentUser) -> dict[str, Any]:
-    if invite.get("status") != "pending":
-        raise HTTPException(status.HTTP_410_GONE, "This invite is no longer active.")
-    if int(invite.get("target_discord_id")) != user.discord_id:
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "This invite is not for you.")
-
-    party_a = get_party(invite["party_id"])  # the inviting party
-    if not party_a:
-        delete_party_invite(invite["invite_id"])
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "That party no longer exists.")
+def _merge_user_into_party(user: CurrentUser, party_a: dict[str, Any]) -> dict[str, Any]:
+    """Add the user to party_a, merging their solo group if needed."""
     if party_a.get("status") not in (PARTY_PREPARING, PARTY_POSTED):
-        delete_party_invite(invite["invite_id"])
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "That party is no longer accepting members.")
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "That party is no longer accepting members.",
+        )
 
     party_b = get_active_party_for_user(user.discord_id)
     if party_b and party_b.get("party_id") == party_a.get("party_id"):
-        delete_party_invite(invite["invite_id"])
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "You are already in this party.")
 
     block = find_blocking_lineup(
@@ -1465,14 +1506,16 @@ def _accept_party_invite(invite: dict[str, Any], user: CurrentUser) -> dict[str,
         raise HTTPException(status.HTTP_409_CONFLICT, lineup_lock_message(block))
 
     if not party_b:
-        lineup = party_a.get("lineup", [])
+        lineup = list(party_a.get("lineup", []))
         if is_roster_full(lineup):
-            delete_party_invite(invite["invite_id"])
-            raise HTTPException(status.HTTP_400_BAD_REQUEST, "That party's roster is already full (5/5).")
-        # Solo join without an active party — default runner unless host needs a bagger.
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                "That party's roster is already full (5/5).",
+            )
+        if _player_in_lineup(lineup, user.discord_id):
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "You are already in this party.")
         is_bagger = only_baggers_can_fill(lineup)
         if not role_allowed_for_lineup(lineup, bagger=is_bagger):
-            delete_party_invite(invite["invite_id"])
             raise HTTPException(
                 status.HTTP_400_BAD_REQUEST,
                 "That party only has a bagger slot left.",
@@ -1493,62 +1536,33 @@ def _accept_party_invite(invite: dict[str, Any], user: CurrentUser) -> dict[str,
         upsert_party(party_a)
         finalize_roster_change(party_a, was_hidden=was_hidden)
         _resync_billboard_from_party(party_a)
-
-        from utils.pending_outbound import (
-            clear_outbound_pending_for_party,
-            clear_outbound_pending_for_user,
-        )
-
-        clear_outbound_pending_for_party(party_a.get("party_id"))
-        clear_outbound_pending_for_user(user.discord_id)
-
-        invite["status"] = "accepted"
-        upsert_party_invite(invite)
-        delete_party_invite(invite["invite_id"])
-        from utils.event_bus import publish_event
-
-        publish_event(
-            "queue",
-            {
-                "action": "invite_accepted",
-                "invite_id": invite.get("invite_id"),
-                "party_id": party_a.get("party_id"),
-                "from_discord_id": invite.get("from_discord_id"),
-                "target_discord_id": invite.get("target_discord_id"),
-            },
-        )
-        return {"kind": "invite", "party": party_a}
-
-    # Inviter's party always absorbs the invitee's party.
-    survivor, absorbed = party_a, party_b
-
-    if not can_merge_as_allies(survivor.get("lineup", []), absorbed.get("lineup", [])):
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST,
-            "Can't combine these groups — host needs a bagger for the last slot "
-            "(or the combined roster wouldn't fit).",
-        )
-
-    combined_lineup = list(survivor.get("lineup", []))
-    existing_ids = {p.get("discord_id") for p in combined_lineup}
-    for player in absorbed.get("lineup", []):
-        if player.get("discord_id") in existing_ids:
-            continue
-        combined_lineup.append(player)
-
-    if len(combined_lineup) > ROSTER_SIZE:
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST,
-            f"Combining these rosters would exceed {ROSTER_SIZE} players.",
-        )
-
-    survivor["lineup"] = combined_lineup
-    was_hidden = bool(survivor.get("queue_hidden"))
-    touch_roster_change(survivor)
-    upsert_party(survivor)
-    finalize_roster_change(survivor, was_hidden=was_hidden)
-    cancel_party(absorbed["party_id"])
-    _resync_billboard_from_party(survivor)
+        survivor = party_a
+    else:
+        survivor, absorbed = party_a, party_b
+        if not can_merge_as_allies(survivor.get("lineup", []), absorbed.get("lineup", [])):
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                "Can't combine these groups — host needs a bagger for the last slot "
+                "(or the combined roster wouldn't fit).",
+            )
+        combined_lineup = list(survivor.get("lineup", []))
+        existing_ids = {p.get("discord_id") for p in combined_lineup}
+        for player in absorbed.get("lineup", []):
+            if player.get("discord_id") in existing_ids:
+                continue
+            combined_lineup.append(player)
+        if len(combined_lineup) > ROSTER_SIZE:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                f"Combining these rosters would exceed {ROSTER_SIZE} players.",
+            )
+        survivor["lineup"] = combined_lineup
+        was_hidden = bool(survivor.get("queue_hidden"))
+        touch_roster_change(survivor)
+        upsert_party(survivor)
+        finalize_roster_change(survivor, was_hidden=was_hidden)
+        cancel_party(absorbed["party_id"])
+        _resync_billboard_from_party(survivor)
 
     from utils.pending_outbound import (
         clear_outbound_pending_for_party,
@@ -1556,12 +1570,44 @@ def _accept_party_invite(invite: dict[str, Any], user: CurrentUser) -> dict[str,
     )
 
     clear_outbound_pending_for_party(survivor.get("party_id"))
-    clear_outbound_pending_for_party(absorbed.get("party_id"))
-    for player in absorbed.get("lineup", []):
-        try:
-            clear_outbound_pending_for_user(int(player.get("discord_id")))
-        except (TypeError, ValueError):
-            pass
+    clear_outbound_pending_for_user(user.discord_id)
+    if party_b:
+        clear_outbound_pending_for_party(party_b.get("party_id"))
+        for player in party_b.get("lineup", []):
+            try:
+                clear_outbound_pending_for_user(int(player.get("discord_id")))
+            except (TypeError, ValueError):
+                pass
+
+    from utils.event_bus import publish_event
+
+    publish_event(
+        "queue",
+        {
+            "action": "party_joined",
+            "party_id": survivor.get("party_id"),
+            "discord_id": user.discord_id,
+        },
+    )
+    return survivor
+
+
+def _accept_party_invite(invite: dict[str, Any], user: CurrentUser) -> dict[str, Any]:
+    if invite.get("status") != "pending":
+        raise HTTPException(status.HTTP_410_GONE, "This invite is no longer active.")
+    if int(invite.get("target_discord_id")) != user.discord_id:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "This invite is not for you.")
+
+    party_a = get_party(invite["party_id"])
+    if not party_a:
+        delete_party_invite(invite["invite_id"])
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "That party no longer exists.")
+
+    try:
+        survivor = _merge_user_into_party(user, party_a)
+    except HTTPException:
+        delete_party_invite(invite["invite_id"])
+        raise
 
     invite["status"] = "accepted"
     upsert_party_invite(invite)

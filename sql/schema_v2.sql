@@ -132,3 +132,39 @@ CREATE TABLE IF NOT EXISTS lineup_ratings (
 );
 CREATE INDEX IF NOT EXISTS lineup_ratings_members_idx ON lineup_ratings USING GIN (member_ids);
 CREATE INDEX IF NOT EXISTS lineup_ratings_track_idx ON lineup_ratings (track);
+
+-- Patreon membership sync (webhook-driven supporter perks)
+CREATE TABLE IF NOT EXISTS patreon_memberships (
+  member_id TEXT PRIMARY KEY,
+  patreon_user_id TEXT NOT NULL,
+  discord_id BIGINT,
+  patron_status TEXT NOT NULL,
+  pledge_cents INT,
+  campaign_id TEXT,
+  last_event_type TEXT,
+  last_event_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  data JSONB NOT NULL DEFAULT '{}'::jsonb,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS patreon_memberships_discord_idx ON patreon_memberships (discord_id);
+CREATE INDEX IF NOT EXISTS patreon_memberships_user_idx ON patreon_memberships (patreon_user_id);
+
+ALTER TABLE patreon_memberships ADD COLUMN IF NOT EXISTS next_charge_date TIMESTAMPTZ;
+
+CREATE TABLE IF NOT EXISTS patreon_webhook_events (
+  event_key TEXT PRIMARY KEY,
+  event_type TEXT NOT NULL,
+  processed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Supporter tiers + perk fields (v1.0)
+ALTER TABLE players ADD COLUMN IF NOT EXISTS supporter_tier TEXT;
+ALTER TABLE players ADD COLUMN IF NOT EXISTS display_name_custom BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE players ADD COLUMN IF NOT EXISTS favorite_track TEXT;
+ALTER TABLE players ADD COLUMN IF NOT EXISTS profile_alias TEXT;
+ALTER TABLE players ADD COLUMN IF NOT EXISTS lineup_name_color TEXT;
+ALTER TABLE players ADD COLUMN IF NOT EXISTS supporter_expires_at TIMESTAMPTZ;
+CREATE UNIQUE INDEX IF NOT EXISTS players_profile_alias_idx ON players (LOWER(profile_alias)) WHERE profile_alias IS NOT NULL;
+
+-- Backfill legacy boolean supporter flag into tier.
+UPDATE players SET supporter_tier = 'supporter' WHERE supporter = TRUE AND (supporter_tier IS NULL OR supporter_tier = '');
